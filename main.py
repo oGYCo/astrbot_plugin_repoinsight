@@ -27,27 +27,24 @@ class Main(Star):
         
         # 获取配置参数
         self.api_base_url = getattr(self.plugin_config, 'api_base_url', 'http://localhost:8000')
-        self.timeout = getattr(self.plugin_config, 'timeout', 300)
+        self.timeout = getattr(self.plugin_config, 'timeout', 30)
         self.poll_interval = getattr(self.plugin_config, 'poll_interval', 5)
         
-        # Embedding配置 - 使用嵌套配置格式
-        embedding_config_raw = getattr(self.plugin_config, 'embedding_config', {})
+        # 暂时使用硬编码的默认配置，后续可以通过其他方式配置
         self.embedding_config = {
-            'provider': getattr(embedding_config_raw, 'provider', 'qwen'),
-            'model_name': getattr(embedding_config_raw, 'model', 'text-embedding-v4'),
-            'api_key': getattr(embedding_config_raw, 'api_key', ''),
-            'api_base': getattr(embedding_config_raw, 'base_url', ''),
+            'provider': 'qwen',
+            'model_name': 'text-embedding-v4',
+            'api_key': '',
+            'api_base': '',
             'extra_params': {}
         }
         
-        # LLM配置 - 使用嵌套配置格式
-        llm_config_raw = getattr(self.plugin_config, 'llm_config', {})
         self.llm_config = {
-            'provider': getattr(llm_config_raw, 'provider', 'qwen'),
-            'model_name': getattr(llm_config_raw, 'model', 'qwen-plus'),
-            'api_key': getattr(llm_config_raw, 'api_key', ''),
-            'temperature': getattr(llm_config_raw, 'temperature', 0.7),
-            'max_tokens': getattr(llm_config_raw, 'max_tokens', 9000)
+            'provider': 'qwen',
+            'model_name': 'qwen-plus',
+            'api_key': '',
+            'temperature': 0.7,
+            'max_tokens': 9000
         }
         
         # 初始化状态管理器
