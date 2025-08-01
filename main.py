@@ -16,12 +16,12 @@ import os
 
 
 @register("RepoInsight", "oGYCo", "GitHub仓库智能问答插件，支持仓库分析和智能问答", "1.0.0")
-class RepoInsightPlugin(Star):
-    def __init__(self, context: Context):
+class Main(Star):
+    def __init__(self, context: Context, config):
         super().__init__(context)
         
         # 从配置中获取插件配置
-        plugin_config = self.context.get_config_by_name("astrbot_plugin_repoinsight") or {}
+        plugin_config = config or {}
         self.api_base_url = plugin_config.get('api_base_url', 'http://localhost:8000')
         self.timeout = plugin_config.get('timeout', 300)
         self.poll_interval = plugin_config.get('poll_interval', 5)
