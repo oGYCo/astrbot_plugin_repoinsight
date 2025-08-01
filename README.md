@@ -1,8 +1,6 @@
-# helloworld
+# RepoInsight 插件
 
-AstrBot 插件模板
-
-A template plugin for AstrBot plugin feature
+AstrBot 插件
 
 # 支持
 
