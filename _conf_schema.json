@@ -1,6 +1,6 @@
 {
   "type": "object",
-  "properties": {
+  "items": {
     "api_base_url": {
       "type": "string",
       "title": "GithubBot API 地址",
