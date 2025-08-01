@@ -25,27 +25,29 @@ class Main(Star):
         self.plugin_config = config or {}
         self.astrbot_config = config
         
-        # 获取配置参数 - 扁平化配置结构
+        # 获取配置参数
         self.api_base_url = getattr(self.plugin_config, 'api_base_url', 'http://localhost:8000')
         self.timeout = getattr(self.plugin_config, 'timeout', 300)
         self.poll_interval = getattr(self.plugin_config, 'poll_interval', 5)
         
-        # Embedding配置 - 使用扁平化配置格式
+        # Embedding配置 - 使用嵌套配置格式
+        embedding_config_raw = getattr(self.plugin_config, 'embedding_config', {})
         self.embedding_config = {
-            'provider': getattr(self.plugin_config, 'embedding_provider', 'openai'),
-            'model_name': getattr(self.plugin_config, 'embedding_model', 'text-embedding-3-small'),
-            'api_key': getattr(self.plugin_config, 'embedding_api_key', ''),
-            'api_base': getattr(self.plugin_config, 'embedding_base_url', ''),
+            'provider': getattr(embedding_config_raw, 'provider', 'qwen'),
+            'model_name': getattr(embedding_config_raw, 'model', 'text-embedding-v4'),
+            'api_key': getattr(embedding_config_raw, 'api_key', ''),
+            'api_base': getattr(embedding_config_raw, 'base_url', ''),
             'extra_params': {}
         }
         
-        # LLM配置 - 使用扁平化配置格式
+        # LLM配置 - 使用嵌套配置格式
+        llm_config_raw = getattr(self.plugin_config, 'llm_config', {})
         self.llm_config = {
-            'provider': getattr(self.plugin_config, 'llm_provider', 'openai'),
-            'model_name': getattr(self.plugin_config, 'llm_model', 'gpt-4'),
-            'api_key': getattr(self.plugin_config, 'llm_api_key', ''),
-            'temperature': getattr(self.plugin_config, 'llm_temperature', 0.7),
-            'max_tokens': getattr(self.plugin_config, 'llm_max_tokens', 2000)
+            'provider': getattr(llm_config_raw, 'provider', 'qwen'),
+            'model_name': getattr(llm_config_raw, 'model', 'qwen-plus'),
+            'api_key': getattr(llm_config_raw, 'api_key', ''),
+            'temperature': getattr(llm_config_raw, 'temperature', 0.7),
+            'max_tokens': getattr(llm_config_raw, 'max_tokens', 9000)
         }
         
         # 初始化状态管理器
