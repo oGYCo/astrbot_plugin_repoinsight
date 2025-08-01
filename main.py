@@ -18,7 +18,7 @@ import os
 
 @register("RepoInsight", "oGYCo", "GitHub仓库智能问答插件，支持仓库分析和智能问答", "1.0.0")
 class Main(Star):
-    def __init__(self, context: Context, config: AstrBotConfig = None):
+    def __init__(self, context: Context, config: AstrBotConfig | None = None):
         super().__init__(context)
         
         # 初始化配置
@@ -26,26 +26,26 @@ class Main(Star):
         self.astrbot_config = config
         
         # 获取配置参数
-        self.api_base_url = getattr(self.plugin_config, 'api_base_url', 'http://localhost:8000')
-        self.timeout = getattr(self.plugin_config, 'timeout', 30)
-        self.poll_interval = getattr(self.plugin_config, 'poll_interval', 5)
+        self.api_base_url = self.plugin_config.get('api_base_url', 'http://localhost:8000') if self.plugin_config else 'http://localhost:8000'
+        self.timeout = self.plugin_config.get('timeout', 30) if self.plugin_config else 30
+        self.poll_interval = self.plugin_config.get('poll_interval', 5) if self.plugin_config else 5
         
         # Embedding配置 - 使用平级配置格式
         self.embedding_config = {
-            'provider': getattr(self.plugin_config, 'embedding_provider', 'qwen'),
-            'model_name': getattr(self.plugin_config, 'embedding_model', 'text-embedding-v4'),
-            'api_key': getattr(self.plugin_config, 'embedding_api_key', ''),
-            'api_base': getattr(self.plugin_config, 'embedding_base_url', ''),
+            'provider': self.plugin_config.get('embedding_provider', 'qwen') if self.plugin_config else 'qwen',
+            'model_name': self.plugin_config.get('embedding_model', 'text-embedding-v4') if self.plugin_config else 'text-embedding-v4',
+            'api_key': self.plugin_config.get('embedding_api_key', '') if self.plugin_config else '',
+            'api_base': self.plugin_config.get('embedding_base_url', '') if self.plugin_config else '',
             'extra_params': {}
         }
         
         # LLM配置 - 使用平级配置格式
         self.llm_config = {
-            'provider': getattr(self.plugin_config, 'llm_provider', 'qwen'),
-            'model_name': getattr(self.plugin_config, 'llm_model', 'qwen-plus'),
-            'api_key': getattr(self.plugin_config, 'llm_api_key', ''),
-            'temperature': getattr(self.plugin_config, 'llm_temperature', 0.7),
-            'max_tokens': getattr(self.plugin_config, 'llm_max_tokens', 9000)
+            'provider': self.plugin_config.get('llm_provider', 'qwen') if self.plugin_config else 'qwen',
+            'model_name': self.plugin_config.get('llm_model', 'qwen-plus') if self.plugin_config else 'qwen-plus',
+            'api_key': self.plugin_config.get('llm_api_key', '') if self.plugin_config else '',
+            'temperature': self.plugin_config.get('llm_temperature', 0.7) if self.plugin_config else 0.7,
+            'max_tokens': self.plugin_config.get('llm_max_tokens', 9000) if self.plugin_config else 9000
         }
         
         # 初始化状态管理器
