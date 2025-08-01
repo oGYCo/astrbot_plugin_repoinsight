@@ -27,23 +27,23 @@ class RepoInsightPlugin(Star):
         self.timeout = plugin_config.get('timeout', 300)
         self.poll_interval = plugin_config.get('poll_interval', 5)
         
-        # Embedding配置
-        self.embedding_config = plugin_config.get('embedding_config', {
-            'provider': 'openai',
-            'model_name': 'text-embedding-3-small',
-            'api_key': '',
-            'api_base': '',
+        # Embedding配置 - 使用扁平化配置格式
+        self.embedding_config = {
+            'provider': plugin_config.get('embedding_provider', 'openai'),
+            'model_name': plugin_config.get('embedding_model', 'text-embedding-3-small'),
+            'api_key': plugin_config.get('embedding_api_key', ''),
+            'api_base': plugin_config.get('embedding_base_url', ''),
             'extra_params': {}
-        })
+        }
         
-        # LLM配置
-        self.llm_config = plugin_config.get('llm_config', {
-            'provider': 'openai',
-            'model_name': 'gpt-4',
-            'api_key': '',
-            'temperature': 0.7,
-            'max_tokens': 2000
-        })
+        # LLM配置 - 使用扁平化配置格式
+        self.llm_config = {
+            'provider': plugin_config.get('llm_provider', 'openai'),
+            'model_name': plugin_config.get('llm_model', 'gpt-4'),
+            'api_key': plugin_config.get('llm_api_key', ''),
+            'temperature': plugin_config.get('llm_temperature', 0.7),
+            'max_tokens': plugin_config.get('llm_max_tokens', 2000)
+        }
         
         # 初始化状态管理器
         self.state_manager = StateManager()
