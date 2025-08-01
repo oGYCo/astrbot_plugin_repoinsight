@@ -2,19 +2,73 @@
   "api_base_url": {
     "type": "string",
     "description": "GithubBot 服务的 API 基础地址",
-    "default": "http://api:8000",
-    "hint": "请输入 GithubBot 服务的完整地址，如 http://localhost:8000"
+    "hint": "请输入 GithubBot 服务的完整地址，如 http://localhost:8000",
+    "default": "http://api:8000"
   },
   "timeout": {
     "type": "int",
     "description": "API 请求的超时时间（秒）",
-    "default": 30,
-    "hint": "建议设置为 30-120 秒"
+    "hint": "建议设置为 30-120 秒",
+    "default": 30
   },
   "poll_interval": {
     "type": "int",
     "description": "查询任务状态的轮询间隔（秒）",
-    "default": 5,
-    "hint": "建议设置为 3-10 秒"
+    "hint": "建议设置为 3-10 秒",
+    "default": 5
+  },
+  "embedding_provider": {
+    "type": "string",
+    "description": "Embedding 模型提供商",
+    "hint": "支持 openai、azure、anthropic、google、local、qwen",
+    "default": "qwen"
+  },
+  "embedding_model": {
+    "type": "string",
+    "description": "Embedding 模型名称",
+    "hint": "如 text-embedding-ada-002、text-embedding-3-small",
+    "default": "text-embedding-v4"
+  },
+  "embedding_api_key": {
+    "type": "string",
+    "description": "Embedding 模型的 API 密钥",
+    "hint": "请输入您的 Embedding 模型 API 密钥",
+    "default": ""
+  },
+  "embedding_base_url": {
+    "type": "string",
+    "description": "Embedding API 基础地址（可选）",
+    "hint": "如使用代理或自部署服务，请填写完整地址",
+    "default": ""
+  },
+  "llm_provider": {
+    "type": "string",
+    "description": "LLM 模型提供商",
+    "hint": "支持 openai、azure、anthropic、google、local、qwen",
+    "default": "qwen"
+  },
+  "llm_model": {
+    "type": "string",
+    "description": "LLM 模型名称",
+    "hint": "如 gpt-3.5-turbo、gpt-4、claude-3-sonnet",
+    "default": "qwen-plus"
+  },
+  "llm_api_key": {
+    "type": "string",
+    "description": "LLM 模型的 API 密钥",
+    "hint": "请输入您的 LLM 模型 API 密钥",
+    "default": ""
+  },
+  "llm_temperature": {
+    "type": "float",
+    "description": "模型的创造性参数",
+    "hint": "范围 0.0-2.0，值越高越有创造性",
+    "default": 0.7
+  },
+  "llm_max_tokens": {
+    "type": "int",
+    "description": "单次回复的最大令牌数",
+    "hint": "",
+    "default": 9000
   }
 }

@@ -30,21 +30,22 @@ class Main(Star):
         self.timeout = getattr(self.plugin_config, 'timeout', 30)
         self.poll_interval = getattr(self.plugin_config, 'poll_interval', 5)
         
-        # 暂时使用硬编码的默认配置，后续可以通过其他方式配置
+        # Embedding配置 - 使用平级配置格式
         self.embedding_config = {
-            'provider': 'qwen',
-            'model_name': 'text-embedding-v4',
-            'api_key': '',
-            'api_base': '',
+            'provider': getattr(self.plugin_config, 'embedding_provider', 'qwen'),
+            'model_name': getattr(self.plugin_config, 'embedding_model', 'text-embedding-v4'),
+            'api_key': getattr(self.plugin_config, 'embedding_api_key', ''),
+            'api_base': getattr(self.plugin_config, 'embedding_base_url', ''),
             'extra_params': {}
         }
         
+        # LLM配置 - 使用平级配置格式
         self.llm_config = {
-            'provider': 'qwen',
-            'model_name': 'qwen-plus',
-            'api_key': '',
-            'temperature': 0.7,
-            'max_tokens': 9000
+            'provider': getattr(self.plugin_config, 'llm_provider', 'qwen'),
+            'model_name': getattr(self.plugin_config, 'llm_model', 'qwen-plus'),
+            'api_key': getattr(self.plugin_config, 'llm_api_key', ''),
+            'temperature': getattr(self.plugin_config, 'llm_temperature', 0.7),
+            'max_tokens': getattr(self.plugin_config, 'llm_max_tokens', 9000)
         }
         
         # 初始化状态管理器
