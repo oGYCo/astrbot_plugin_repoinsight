@@ -1,6 +1,7 @@
 from astrbot.api.event import filter, AstrMessageEvent, MessageEventResult
 from astrbot.api.star import Context, Star, register
 from astrbot.api import logger
+from astrbot.core.config.astrbot_config import AstrBotConfig
 import astrbot.api.message_components as Comp
 from astrbot.core.utils.session_waiter import (
     session_waiter,
@@ -17,31 +18,34 @@ import os
 
 @register("RepoInsight", "oGYCo", "GitHub仓库智能问答插件，支持仓库分析和智能问答", "1.0.0")
 class Main(Star):
-    def __init__(self, context: Context, config):
+    def __init__(self, context: Context, config: AstrBotConfig = None):
         super().__init__(context)
         
-        # 从配置中获取插件配置
-        plugin_config = config or {}
-        self.api_base_url = plugin_config.get('api_base_url', 'http://localhost:8000')
-        self.timeout = plugin_config.get('timeout', 300)
-        self.poll_interval = plugin_config.get('poll_interval', 5)
+        # 初始化配置
+        self.plugin_config = config or {}
+        self.astrbot_config = config
+        
+        # 获取配置参数 - 扁平化配置结构
+        self.api_base_url = getattr(self.plugin_config, 'api_base_url', 'http://localhost:8000')
+        self.timeout = getattr(self.plugin_config, 'timeout', 300)
+        self.poll_interval = getattr(self.plugin_config, 'poll_interval', 5)
         
         # Embedding配置 - 使用扁平化配置格式
         self.embedding_config = {
-            'provider': plugin_config.get('embedding_provider', 'openai'),
-            'model_name': plugin_config.get('embedding_model', 'text-embedding-3-small'),
-            'api_key': plugin_config.get('embedding_api_key', ''),
-            'api_base': plugin_config.get('embedding_base_url', ''),
+            'provider': getattr(self.plugin_config, 'embedding_provider', 'openai'),
+            'model_name': getattr(self.plugin_config, 'embedding_model', 'text-embedding-3-small'),
+            'api_key': getattr(self.plugin_config, 'embedding_api_key', ''),
+            'api_base': getattr(self.plugin_config, 'embedding_base_url', ''),
             'extra_params': {}
         }
         
         # LLM配置 - 使用扁平化配置格式
         self.llm_config = {
-            'provider': plugin_config.get('llm_provider', 'openai'),
-            'model_name': plugin_config.get('llm_model', 'gpt-4'),
-            'api_key': plugin_config.get('llm_api_key', ''),
-            'temperature': plugin_config.get('llm_temperature', 0.7),
-            'max_tokens': plugin_config.get('llm_max_tokens', 2000)
+            'provider': getattr(self.plugin_config, 'llm_provider', 'openai'),
+            'model_name': getattr(self.plugin_config, 'llm_model', 'gpt-4'),
+            'api_key': getattr(self.plugin_config, 'llm_api_key', ''),
+            'temperature': getattr(self.plugin_config, 'llm_temperature', 0.7),
+            'max_tokens': getattr(self.plugin_config, 'llm_max_tokens', 2000)
         }
         
         # 初始化状态管理器
