@@ -28,7 +28,7 @@
       "type": "object",
       "title": "Embedding 配置",
       "description": "用于代码向量化的 Embedding 模型配置",
-      "properties": {
+      "items": {
         "provider": {
           "type": "string",
           "title": "提供商",
@@ -71,7 +71,7 @@
       "type": "object",
       "title": "LLM 配置",
       "description": "用于生成答案的大语言模型配置",
-      "properties": {
+      "items": {
         "provider": {
           "type": "string",
           "title": "提供商",
