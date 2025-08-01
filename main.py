@@ -279,7 +279,7 @@ class Main(Star):
                 payload = {
                     "session_id": analysis_session_id,
                     "question": question,
-                    "generation_mode": "plugin",  # 使用插件模式，只返回上下文
+                    "generation_mode": "service",
                     "llm_config": self.llm_config
                 }
                 
@@ -335,7 +335,7 @@ class Main(Star):
                                 error_msg = status_result.get('message', '查询失败')
                                 logger.error(f"查询失败: {error_msg}")
                                 return None
-                            elif status in ['queued', 'processing']:
+                            elif status in ['queued', 'processing', 'started', 'pending']:
                                 await asyncio.sleep(2)  # 查询轮询间隔更短
                             else:
                                 logger.error(f"未知查询状态: {status}")
