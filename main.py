@@ -1,24 +1,563 @@
 from astrbot.api.event import filter, AstrMessageEvent, MessageEventResult
 from astrbot.api.star import Context, Star, register
 from astrbot.api import logger
+import astrbot.api.message_components as Comp
+from astrbot.core.utils.session_waiter import (
+    session_waiter,
+    SessionController,
+)
+import asyncio
+import aiohttp
+import json
+import re
+from typing import Optional, Dict, Any
+from datetime import datetime
+import os
 
-@register("helloworld", "YourName", "一个简单的 Hello World 插件", "1.0.0")
-class MyPlugin(Star):
+
+@register("RepoInsight", "oGYCo", "GitHub仓库智能问答插件，支持仓库分析和智能问答", "1.0.0", "https://github.com/oGYCo/astrbot_plugin_repoinsight")
+class RepoInsightPlugin(Star):
     def __init__(self, context: Context):
         super().__init__(context)
-
-    async def initialize(self):
-        """可选择实现异步的插件初始化方法，当实例化该插件类之后会自动调用该方法。"""
+        self.config = self.context.get_config()
+        
+        # 从配置中获取GithubBot API配置
+        plugin_config = getattr(self.config, 'repoinsight', {})
+        self.api_base_url = plugin_config.get('api_base_url', 'http://localhost:8000')
+        self.timeout = plugin_config.get('timeout', 300)
+        self.poll_interval = plugin_config.get('poll_interval', 5)
+        
+        # Embedding配置
+        self.embedding_config = plugin_config.get('embedding_config', {
+            'provider': 'openai',
+            'model_name': 'text-embedding-3-small',
+            'api_key': '',
+            'api_base': '',
+            'extra_params': {}
+        })
+        
+        # LLM配置
+        self.llm_config = plugin_config.get('llm_config', {
+            'provider': 'openai',
+            'model_name': 'gpt-4',
+            'api_key': '',
+            'temperature': 0.7,
+            'max_tokens': 2000
+        })
+        
+        # 初始化状态管理器
+        self.state_manager = StateManager()
+        
+        # 启动时恢复未完成的任务
+        asyncio.create_task(self._restore_pending_tasks())
+        
+        logger.info("RepoInsight插件已初始化")
     
-    # 注册指令的装饰器。指令名为 helloworld。注册成功后，发送 `/helloworld` 就会触发这个指令，并回复 `你好, {user_name}!`
-    @filter.command("helloworld")
-    async def helloworld(self, event: AstrMessageEvent):
-        """这是一个 hello world 指令""" # 这是 handler 的描述，将会被解析方便用户了解插件内容。建议填写。
-        user_name = event.get_sender_name()
-        message_str = event.message_str # 用户发的纯文本消息字符串
-        message_chain = event.get_messages() # 用户所发的消息的消息链 # from astrbot.api.message_components import *
-        logger.info(message_chain)
-        yield event.plain_result(f"Hello, {user_name}, 你发了 {message_str}!") # 发送一条纯文本消息
+    async def _restore_pending_tasks(self):
+        """恢复插件重启前未完成的任务"""
+        try:
+            pending_tasks = await self.state_manager.get_all_pending_tasks()
+            for task in pending_tasks:
+                logger.info(f"恢复任务: {task['session_id']} - {task['repo_url']}")
+                # 这里可以添加恢复逻辑，比如重新检查任务状态
+        except Exception as e:
+            logger.error(f"恢复任务失败: {e}")
+    
+    @filter.command("repo_qa")
+    async def repo_qa_session(self, event: AstrMessageEvent):
+        """启动仓库问答会话"""
+        try:
+            yield event.plain_result("🚀 欢迎使用 RepoInsight！\n\n请发送您要分析的 GitHub 仓库 URL：")
+            
+            @session_waiter(timeout=300, record_history_chains=False)
+            async def repo_qa_waiter(controller: SessionController, event: AstrMessageEvent):
+                user_input = event.message_str.strip()
+                
+                # 检查是否要退出
+                if user_input.lower() in ['退出', 'exit', 'quit', '取消']:
+                    await event.send(event.plain_result("👋 已退出 RepoInsight 会话"))
+                    controller.stop()
+                    return
+                
+                # 验证GitHub URL
+                if not self._is_valid_github_url(user_input):
+                    await event.send(event.plain_result(
+                        "❌ 请输入有效的 GitHub 仓库 URL\n\n"
+                        "示例: https://github.com/user/repo\n\n"
+                        "或发送 '退出' 结束会话"
+                    ))
+                    controller.keep(timeout=300, reset_timeout=True)
+                    return
+                
+                repo_url = user_input
+                await event.send(event.plain_result(f"📋 正在分析仓库: {repo_url}\n\n⏳ 请稍候..."))
+                
+                try:
+                    # 启动仓库分析
+                    analysis_session_id = await self._start_repository_analysis(repo_url)
+                    if not analysis_session_id:
+                        await event.send(event.plain_result("❌ 启动仓库分析失败，请稍后重试"))
+                        controller.stop()
+                        return
+                    
+                    # 保存任务状态
+                    await self.state_manager.add_task(analysis_session_id, repo_url, event.unified_msg_origin)
+                    
+                    # 轮询分析状态
+                    analysis_result = await self._poll_analysis_status(analysis_session_id, event)
+                    if not analysis_result:
+                        await self.state_manager.remove_task(analysis_session_id)
+                        controller.stop()
+                        return
+                    
+                    # 分析完成，进入问答模式
+                    await event.send(event.plain_result(
+                        f"✅ 仓库分析完成！\n\n"
+                        f"📊 **分析结果:**\n"
+                        f"• 仓库: {analysis_result.get('repository_name', 'Unknown')}\n"
+                        f"• 文件数: {analysis_result.get('total_files', 0)}\n"
+                        f"• 代码块数: {analysis_result.get('total_chunks', 0)}\n\n"
+                        f"💬 现在您可以开始提问了！\n\n"
+                        f"发送 '退出' 结束会话"
+                    ))
+                    
+                    # 进入问答循环
+                    await self._enter_qa_loop(controller, event, analysis_session_id)
+                    
+                except Exception as e:
+                    logger.error(f"仓库分析过程出错: {e}")
+                    await event.send(event.plain_result(f"❌ 分析过程出错: {str(e)}"))
+                    controller.stop()
+            
+            try:
+                await repo_qa_waiter(event)
+            except TimeoutError:
+                yield event.plain_result("⏰ 会话超时，已自动退出")
+            except Exception as e:
+                logger.error(f"会话处理出错: {e}")
+                yield event.plain_result(f"❌ 会话处理出错: {str(e)}")
+            finally:
+                event.stop_event()
+                
+        except Exception as e:
+            logger.error(f"启动仓库问答会话失败: {e}")
+            yield event.plain_result(f"❌ 启动会话失败: {str(e)}")
+    
+    async def _enter_qa_loop(self, controller: SessionController, event: AstrMessageEvent, analysis_session_id: str):
+        """进入问答循环"""
+        # 创建嵌套的session_waiter来处理问答循环
+        @session_waiter(timeout=600, record_history_chains=False)
+        async def qa_loop_waiter(qa_controller: SessionController, qa_event: AstrMessageEvent):
+            user_question = qa_event.message_str.strip()
+            
+            if user_question.lower() in ['退出', 'exit', 'quit', '取消']:
+                await qa_event.send(qa_event.plain_result("👋 感谢使用 RepoInsight！"))
+                await self.state_manager.remove_task(analysis_session_id)
+                qa_controller.stop()
+                controller.stop()  # 同时停止外层控制器
+                return
+            
+            if not user_question:
+                await qa_event.send(qa_event.plain_result("请输入您的问题，或发送 '退出' 结束会话"))
+                qa_controller.keep(timeout=600, reset_timeout=True)
+                return
+            
+            await qa_event.send(qa_event.plain_result(f"🤔 正在思考您的问题: {user_question}\n\n⏳ 请稍候..."))
+            
+            try:
+                # 提交查询请求
+                query_session_id = await self._submit_query(analysis_session_id, user_question)
+                if not query_session_id:
+                    await qa_event.send(qa_event.plain_result("❌ 提交问题失败，请重试\n\n继续提问或发送 '退出' 结束会话"))
+                    qa_controller.keep(timeout=600, reset_timeout=True)
+                    return
+                
+                # 轮询查询结果
+                answer = await self._poll_query_result(query_session_id, qa_event)
+                if answer:
+                    await qa_event.send(qa_event.plain_result(f"💡 **回答:**\n\n{answer}\n\n继续提问或发送 '退出' 结束会话"))
+                else:
+                    await qa_event.send(qa_event.plain_result("❌ 获取答案失败，请重试\n\n继续提问或发送 '退出' 结束会话"))
+                
+                # 继续等待下一个问题
+                qa_controller.keep(timeout=600, reset_timeout=True)
+                
+            except Exception as e:
+                logger.error(f"处理问题时出错: {e}")
+                await qa_event.send(qa_event.plain_result(f"❌ 处理问题时出错: {str(e)}\n\n继续提问或发送 '退出' 结束会话"))
+                qa_controller.keep(timeout=600, reset_timeout=True)
+        
+        # 启动问答循环
+        try:
+            await qa_loop_waiter(event)
+        except TimeoutError:
+            await event.send(event.plain_result("⏰ 问答会话超时，已自动退出"))
+            await self.state_manager.remove_task(analysis_session_id)
+        except Exception as e:
+            logger.error(f"问答循环出错: {e}")
+            await event.send(event.plain_result(f"❌ 问答循环出错: {str(e)}"))
+            await self.state_manager.remove_task(analysis_session_id)
+    
+    def _is_valid_github_url(self, url: str) -> bool:
+        """验证GitHub URL格式"""
+        github_pattern = r'^https://github\.com/[\w\.-]+/[\w\.-]+/?$'
+        return bool(re.match(github_pattern, url))
+    
+    async def _start_repository_analysis(self, repo_url: str) -> Optional[str]:
+        """启动仓库分析"""
+        try:
+            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=self.timeout)) as session:
+                payload = {
+                    "repo_url": repo_url,
+                    "embedding_config": self.embedding_config
+                }
+                
+                async with session.post(
+                    f"{self.api_base_url}/api/v1/repos/analyze",
+                    json=payload,
+                    headers={"Content-Type": "application/json"}
+                ) as response:
+                    if response.status == 200:
+                        result = await response.json()
+                        return result.get('session_id')
+                    else:
+                        error_text = await response.text()
+                        logger.error(f"启动分析失败: {response.status} - {error_text}")
+                        return None
+        except Exception as e:
+            logger.error(f"启动仓库分析请求失败: {e}")
+            return None
+    
+    async def _poll_analysis_status(self, session_id: str, event: AstrMessageEvent) -> Optional[Dict[str, Any]]:
+        """轮询分析状态"""
+        try:
+            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=self.timeout)) as session:
+                while True:
+                    async with session.get(
+                        f"{self.api_base_url}/api/v1/repos/status/{session_id}"
+                    ) as response:
+                        if response.status == 200:
+                            result = await response.json()
+                            status = result.get('status')
+                            
+                            if status == 'success':
+                                return result
+                            elif status == 'failed':
+                                error_msg = result.get('error_message', '未知错误')
+                                await event.send(event.plain_result(f"❌ 分析失败: {error_msg}"))
+                                return None
+                            elif status in ['queued', 'processing']:
+                                # 显示进度
+                                processed = result.get('processed_files', 0)
+                                total = result.get('total_files', 0)
+                                if total > 0:
+                                    progress = f"({processed}/{total})"
+                                else:
+                                    progress = ""
+                                
+                                await event.send(event.plain_result(
+                                    f"📊 分析进行中... {progress}\n\n"
+                                    f"状态: {status}\n"
+                                    f"请耐心等待..."
+                                ))
+                            
+                            await asyncio.sleep(self.poll_interval)
+                        else:
+                            logger.error(f"查询分析状态失败: {response.status}")
+                            return None
+        except Exception as e:
+            logger.error(f"轮询分析状态失败: {e}")
+            return None
+    
+    async def _submit_query(self, analysis_session_id: str, question: str) -> Optional[str]:
+        """提交查询请求"""
+        try:
+            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=self.timeout)) as session:
+                payload = {
+                    "session_id": analysis_session_id,
+                    "question": question,
+                    "generation_mode": "plugin",  # 使用插件模式，只返回上下文
+                    "llm_config": self.llm_config
+                }
+                
+                async with session.post(
+                    f"{self.api_base_url}/api/v1/repos/query",
+                    json=payload,
+                    headers={"Content-Type": "application/json"}
+                ) as response:
+                    if response.status == 200:
+                        result = await response.json()
+                        return result.get('session_id')  # 这是查询的session_id
+                    else:
+                        error_text = await response.text()
+                        logger.error(f"提交查询失败: {response.status} - {error_text}")
+                        return None
+        except Exception as e:
+            logger.error(f"提交查询请求失败: {e}")
+            return None
+    
+    async def _poll_query_result(self, query_session_id: str, event: AstrMessageEvent) -> Optional[str]:
+        """轮询查询结果"""
+        try:
+            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=self.timeout)) as session:
+                while True:
+                    # 先检查状态
+                    async with session.get(
+                        f"{self.api_base_url}/api/v1/repos/query/status/{query_session_id}"
+                    ) as response:
+                        if response.status == 200:
+                            status_result = await response.json()
+                            status = status_result.get('status')
+                            
+                            if status == 'success':
+                                # 获取结果
+                                async with session.get(
+                                    f"{self.api_base_url}/api/v1/repos/query/result/{query_session_id}"
+                                ) as result_response:
+                                    if result_response.status == 200:
+                                        result = await result_response.json()
+                                        
+                                        # 如果是plugin模式，需要自己生成答案
+                                        if result.get('generation_mode') == 'plugin':
+                                            return await self._generate_answer_from_context(
+                                                result.get('retrieved_context', []),
+                                                result.get('question', '')
+                                            )
+                                        else:
+                                            return result.get('answer', '未获取到答案')
+                                    else:
+                                        logger.error(f"获取查询结果失败: {result_response.status}")
+                                        return None
+                            elif status == 'failed':
+                                error_msg = status_result.get('message', '查询失败')
+                                logger.error(f"查询失败: {error_msg}")
+                                return None
+                            elif status in ['queued', 'processing']:
+                                await asyncio.sleep(2)  # 查询轮询间隔更短
+                            else:
+                                logger.error(f"未知查询状态: {status}")
+                                return None
+                        else:
+                            logger.error(f"查询状态检查失败: {response.status}")
+                            return None
+        except Exception as e:
+            logger.error(f"轮询查询结果失败: {e}")
+            return None
+    
+    async def _generate_answer_from_context(self, context_list: list, question: str) -> str:
+        """基于检索到的上下文生成答案"""
+        try:
+            if not context_list:
+                return "抱歉，没有找到相关的代码信息来回答您的问题。"
+            
+            # 构建上下文字符串
+            context_str = "\n\n".join([
+                f"文件: {ctx.get('file_path', 'Unknown')}\n内容: {ctx.get('content', '')}"
+                for ctx in context_list[:5]  # 限制上下文数量
+            ])
+            
+            # 构建提示词
+            prompt = f"""基于以下代码上下文回答用户问题：
 
+上下文：
+{context_str}
+
+用户问题：{question}
+
+请基于提供的代码上下文给出准确、详细的回答。如果上下文中没有足够信息回答问题，请说明这一点。"""
+            
+            # 使用AstrBot的LLM功能生成答案
+            provider = self.context.get_using_provider()
+            if provider:
+                response = await provider.text_chat(
+                    prompt=prompt,
+                    session_id=None,
+                    contexts=[],
+                    image_urls=[],
+                    system_prompt="你是一个专业的代码分析助手，能够基于提供的代码上下文回答用户的问题。"
+                )
+                return response.completion_text if response else "生成答案失败"
+            else:
+                # 如果没有配置LLM，返回简单的上下文摘要
+                return f"找到了 {len(context_list)} 个相关代码片段：\n\n" + "\n\n".join([
+                    f"📁 {ctx.get('file_path', 'Unknown')}\n{ctx.get('content', '')[:200]}..."
+                    for ctx in context_list[:3]
+                ])
+        except Exception as e:
+            logger.error(f"生成答案失败: {e}")
+            return f"生成答案时出错: {str(e)}"
+    
+    @filter.command("repo_status")
+    async def check_repo_status(self, event: AstrMessageEvent):
+        """查看当前用户的仓库分析状态"""
+        try:
+            tasks = await self.state_manager.get_user_tasks(event.unified_msg_origin)
+            if not tasks:
+                yield event.plain_result("📋 您当前没有进行中的仓库分析任务")
+                return
+            
+            status_text = "📊 **您的仓库分析状态:**\n\n"
+            for task in tasks:
+                status_text += f"• 仓库: {task['repo_url']}\n"
+                status_text += f"  会话ID: {task['session_id']}\n"
+                status_text += f"  创建时间: {task['created_at']}\n\n"
+            
+            yield event.plain_result(status_text)
+        except Exception as e:
+            logger.error(f"查看状态失败: {e}")
+            yield event.plain_result(f"❌ 查看状态失败: {str(e)}")
+    
+    @filter.command("repo_config")
+    async def show_config(self, event: AstrMessageEvent):
+        """显示当前配置"""
+        try:
+            config_text = f"""⚙️ **RepoInsight 配置信息:**
+
+**API 配置:**
+• 服务地址: {self.api_base_url}
+• 超时时间: {self.timeout}秒
+• 轮询间隔: {self.poll_interval}秒
+
+**Embedding 配置:**
+• 提供商: {self.embedding_config.get('provider', 'Unknown')}
+• 模型: {self.embedding_config.get('model_name', 'Unknown')}
+
+**LLM 配置:**
+• 提供商: {self.llm_config.get('provider', 'Unknown')}
+• 模型: {self.llm_config.get('model_name', 'Unknown')}
+• 温度: {self.llm_config.get('temperature', 0.7)}
+• 最大令牌: {self.llm_config.get('max_tokens', 2000)}"""
+            
+            yield event.plain_result(config_text)
+        except Exception as e:
+            logger.error(f"显示配置失败: {e}")
+            yield event.plain_result(f"❌ 显示配置失败: {str(e)}")
+    
     async def terminate(self):
-        """可选择实现异步的插件销毁方法，当插件被卸载/停用时会调用。"""
+        """插件终止时的清理工作"""
+        try:
+            await self.state_manager.close()
+            logger.info("RepoInsight插件已清理完成")
+        except Exception as e:
+            logger.error(f"插件清理失败: {e}")
+
+
+class StateManager:
+    """状态持久化管理器"""
+    
+    def __init__(self):
+        self.db_path = os.path.join("data", "repoinsight_tasks.db")
+        self._ensure_data_dir()
+        self._init_db_task = asyncio.create_task(self._init_db())
+    
+    def _ensure_data_dir(self):
+        """确保data目录存在"""
+        os.makedirs("data", exist_ok=True)
+    
+    async def _init_db(self):
+        """初始化数据库"""
+        try:
+            import aiosqlite
+            async with aiosqlite.connect(self.db_path) as db:
+                await db.execute("""
+                    CREATE TABLE IF NOT EXISTS analysis_tasks (
+                        session_id TEXT PRIMARY KEY,
+                        repo_url TEXT NOT NULL,
+                        user_origin TEXT NOT NULL,
+                        created_at TEXT NOT NULL,
+                        status TEXT DEFAULT 'pending'
+                    )
+                """)
+                await db.commit()
+        except ImportError:
+            logger.warning("aiosqlite未安装，状态持久化功能将不可用")
+        except Exception as e:
+            logger.error(f"初始化数据库失败: {e}")
+    
+    async def add_task(self, session_id: str, repo_url: str, user_origin: str):
+        """添加分析任务"""
+        try:
+            await self._init_db_task  # 等待数据库初始化完成
+            import aiosqlite
+            async with aiosqlite.connect(self.db_path) as db:
+                await db.execute(
+                    "INSERT OR REPLACE INTO analysis_tasks (session_id, repo_url, user_origin, created_at) VALUES (?, ?, ?, ?)",
+                    (session_id, repo_url, user_origin, datetime.now().isoformat())
+                )
+                await db.commit()
+        except ImportError:
+            pass  # aiosqlite未安装
+        except Exception as e:
+            logger.error(f"添加任务失败: {e}")
+    
+    async def remove_task(self, session_id: str):
+        """移除分析任务"""
+        try:
+            await self._init_db_task
+            import aiosqlite
+            async with aiosqlite.connect(self.db_path) as db:
+                await db.execute("DELETE FROM analysis_tasks WHERE session_id = ?", (session_id,))
+                await db.commit()
+        except ImportError:
+            pass
+        except Exception as e:
+            logger.error(f"移除任务失败: {e}")
+    
+    async def get_all_pending_tasks(self):
+        """获取所有待处理任务"""
+        try:
+            await self._init_db_task
+            import aiosqlite
+            async with aiosqlite.connect(self.db_path) as db:
+                cursor = await db.execute("SELECT * FROM analysis_tasks WHERE status = 'pending'")
+                rows = await cursor.fetchall()
+                return [
+                    {
+                        'session_id': row[0],
+                        'repo_url': row[1],
+                        'user_origin': row[2],
+                        'created_at': row[3],
+                        'status': row[4]
+                    }
+                    for row in rows
+                ]
+        except ImportError:
+            return []
+        except Exception as e:
+            logger.error(f"获取待处理任务失败: {e}")
+            return []
+    
+    async def get_user_tasks(self, user_origin: str):
+        """获取用户的所有任务"""
+        try:
+            await self._init_db_task
+            import aiosqlite
+            async with aiosqlite.connect(self.db_path) as db:
+                cursor = await db.execute(
+                    "SELECT * FROM analysis_tasks WHERE user_origin = ? ORDER BY created_at DESC",
+                    (user_origin,)
+                )
+                rows = await cursor.fetchall()
+                return [
+                    {
+                        'session_id': row[0],
+                        'repo_url': row[1],
+                        'user_origin': row[2],
+                        'created_at': row[3],
+                        'status': row[4]
+                    }
+                    for row in rows
+                ]
+        except ImportError:
+            return []
+        except Exception as e:
+            logger.error(f"获取用户任务失败: {e}")
+            return []
+    
+    async def close(self):
+        """关闭状态管理器"""
+        try:
+            if hasattr(self, '_init_db_task'):
+                await self._init_db_task
+        except Exception as e:
+            logger.error(f"关闭状态管理器失败: {e}")

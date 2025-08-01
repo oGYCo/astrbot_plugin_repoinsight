@@ -1,0 +1,117 @@
+{
+  "type": "object",
+  "properties": {
+    "api_base_url": {
+      "type": "string",
+      "title": "GithubBot API 地址",
+      "description": "GithubBot 服务的 API 基础地址",
+      "default": "http://api:8000",
+      "examples": ["http://localhost:8000", "https://your-githubbot-server.com"]
+    },
+    "timeout": {
+      "type": "integer",
+      "title": "请求超时时间",
+      "description": "HTTP 请求的超时时间（秒）",
+      "default": 300,
+      "minimum": 30,
+      "maximum": 1800
+    },
+    "poll_interval": {
+      "type": "integer",
+      "title": "轮询间隔",
+      "description": "状态轮询的间隔时间（秒）",
+      "default": 5,
+      "minimum": 1,
+      "maximum": 60
+    },
+    "embedding_config": {
+      "type": "object",
+      "title": "Embedding 配置",
+      "description": "用于代码向量化的 Embedding 模型配置",
+      "properties": {
+        "provider": {
+          "type": "string",
+          "title": "提供商",
+          "description": "Embedding 模型提供商",
+          "default": "qwen",
+          "enum": ["openai", "azure", "huggingface", "local", "qwen"]
+        },
+        "model_name": {
+          "type": "string",
+          "title": "模型名称",
+          "description": "Embedding 模型名称",
+          "default": "text-embedding-v4",
+          "examples": ["text-embedding-v3", "text-embedding-3-large", "text-embedding-ada-002"]
+        },
+        "api_key": {
+          "type": "string",
+          "title": "API 密钥",
+          "description": "Embedding 服务的 API 密钥",
+          "default": "",
+          "format": "password"
+        },
+        "api_base": {
+          "type": "string",
+          "title": "API 基础地址",
+          "description": "Embedding 服务的 API 基础地址（可选）",
+          "default": "",
+          "examples": ["https://api.openai.com/v1", "https://your-azure-endpoint.openai.azure.com"]
+        },
+        "extra_params": {
+          "type": "object",
+          "title": "额外参数",
+          "description": "传递给 Embedding 服务的额外参数",
+          "default": {},
+          "additionalProperties": true
+        }
+      },
+      "required": ["provider", "model_name"]
+    },
+    "llm_config": {
+      "type": "object",
+      "title": "LLM 配置",
+      "description": "用于生成答案的大语言模型配置",
+      "properties": {
+        "provider": {
+          "type": "string",
+          "title": "提供商",
+          "description": "LLM 提供商",
+          "default": "qwen",
+          "enum": ["openai", "azure", "anthropic", "local", "qwen"]
+        },
+        "model_name": {
+          "type": "string",
+          "title": "模型名称",
+          "description": "LLM 模型名称",
+          "default": "qwen-plus",
+          "examples": ["gpt-4", "gpt-4-turbo", "gpt-3.5-turbo", "claude-3-sonnet"]
+        },
+        "api_key": {
+          "type": "string",
+          "title": "API 密钥",
+          "description": "LLM 服务的 API 密钥",
+          "default": "",
+          "format": "password"
+        },
+        "temperature": {
+          "type": "number",
+          "title": "温度",
+          "description": "控制生成文本的随机性",
+          "default": 0.7,
+          "minimum": 0.0,
+          "maximum": 2.0
+        },
+        "max_tokens": {
+          "type": "integer",
+          "title": "最大令牌数",
+          "description": "生成回答的最大令牌数",
+          "default": 2000,
+          "minimum": 100,
+          "maximum": 8000
+        }
+      },
+      "required": ["provider", "model_name"]
+    }
+  },
+  "required": ["api_base_url"]
+}
