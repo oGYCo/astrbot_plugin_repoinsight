@@ -70,7 +70,7 @@ class Main(Star):
     async def repo_qa_session(self, event: AstrMessageEvent):
         """启动仓库问答会话"""
         try:
-            yield event.plain_result("🚀 欢迎使用 RepoInsight！\n\n请发送您要分析的 GitHub 仓库 URL：")
+            yield event.plain_result("🚀 欢迎使用 RepoInsight！\n\n请发送您要分析的 GitHub 仓库 URL：\n\n💡 分析完成后，您可以随时发送新的仓库URL或 '/repo_qa' 命令来切换仓库")
             
             @session_waiter(timeout=300, record_history_chains=False)
             async def repo_qa_waiter(controller: SessionController, event: AstrMessageEvent):
@@ -123,7 +123,10 @@ class Main(Star):
                         f"• 文件数: {analysis_result.get('total_files', 0)}\n"
                         f"• 代码块数: {analysis_result.get('total_chunks', 0)}\n\n"
                         f"💬 现在您可以开始提问了！\n\n"
-                        f"发送 '退出' 结束会话"
+                        f"💡 **提示:**\n"
+                        f"• 发送问题进行仓库问答\n"
+                        f"• 发送 '/repo_qa' 切换到新仓库\n"
+                        f"• 发送 '退出' 结束会话"
                     ))
                     
                     # 进入问答循环，使用仓库URL作为session_id
@@ -162,7 +165,7 @@ class Main(Star):
             
             # 检查是否为空消息
             if not user_question:
-                await qa_event.send(qa_event.plain_result("请输入您的问题，或发送 '退出' 结束会话"))
+                await qa_event.send(qa_event.plain_result("请输入您的问题，或发送 '退出' 结束会话，或发送 '/repo_qa' 切换仓库"))
                 qa_controller.keep(timeout=600, reset_timeout=True)
                 return
             
@@ -177,6 +180,53 @@ class Main(Star):
                 qa_controller.stop()
                 controller.stop()  # 同时停止外层控制器
                 return
+            
+            # 检查是否为切换仓库命令
+            if user_question.lower().startswith('/repo_qa') or user_question.lower().startswith('repo_qa'):
+                await qa_event.send(qa_event.plain_result("🔄 正在切换到新的仓库分析...\n\n请发送您要分析的 GitHub 仓库 URL："))
+                qa_controller.stop()  # 停止当前问答循环
+                controller.stop()     # 停止外层控制器，这会触发新的 repo_qa_session
+                return
+            
+            # 检查是否直接输入了新的GitHub URL（快速切换仓库）
+            if self._is_valid_github_url(user_question) and user_question != session_id:
+                await qa_event.send(qa_event.plain_result(f"🔄 检测到新仓库URL，正在切换分析...\n\n🔗 新仓库: {user_question}"))
+                # 直接开始新仓库的分析流程
+                try:
+                    analysis_session_id = await self._start_repository_analysis(user_question)
+                    if not analysis_session_id:
+                        await qa_event.send(qa_event.plain_result("❌ 启动新仓库分析失败，继续使用当前仓库"))
+                        qa_controller.keep(timeout=600, reset_timeout=True)
+                        return
+                    
+                    await self.state_manager.add_task(analysis_session_id, user_question, qa_event.unified_msg_origin)
+                    
+                    analysis_result = await self._poll_analysis_status(analysis_session_id, qa_event)
+                    if not analysis_result:
+                        await self.state_manager.remove_task(analysis_session_id)
+                        await qa_event.send(qa_event.plain_result("❌ 新仓库分析失败，继续使用当前仓库"))
+                        qa_controller.keep(timeout=600, reset_timeout=True)
+                        return
+                    
+                    await qa_event.send(qa_event.plain_result(
+                        f"✅ 新仓库分析完成！已切换到新仓库\n\n"
+                        f"📊 **分析结果:**\n"
+                        f"• 仓库: {analysis_result.get('repository_name', 'Unknown')}\n"
+                        f"• 文件数: {analysis_result.get('total_files', 0)}\n"
+                        f"• 代码块数: {analysis_result.get('total_chunks', 0)}\n\n"
+                        f"💬 请提出您的问题！"
+                    ))
+                    
+                    # 更新session_id为新仓库URL，重启问答循环
+                    qa_controller.stop()
+                    # 启动新的问答循环
+                    await self._enter_qa_loop(controller, qa_event, user_question)
+                    return
+                except Exception as e:
+                    logger.error(f"切换仓库时出错: {e}")
+                    await qa_event.send(qa_event.plain_result(f"❌ 切换仓库失败: {str(e)}\n\n继续使用当前仓库"))
+                    qa_controller.keep(timeout=600, reset_timeout=True)
+                    return
             
             # 检查是否为重复问题或正在处理的问题
             question_hash = hash(user_question)
@@ -202,7 +252,7 @@ class Main(Star):
                 # 提交查询请求，使用session_id（可能是URL或分析会话ID）
                 query_session_id = await self._submit_query(session_id, user_question)
                 if not query_session_id:
-                    await qa_event.send(qa_event.plain_result("❌ 提交问题失败，请重试\n\n继续提问或发送 '退出' 结束会话"))
+                    await qa_event.send(qa_event.plain_result("❌ 提交问题失败，请重试\n\n继续提问、发送 '/repo_qa' 切换仓库或发送 '退出' 结束会话"))
                     qa_controller.keep(timeout=600, reset_timeout=True)
                     return
                 
@@ -211,16 +261,16 @@ class Main(Star):
                 if answer:
                     # 标记问题为已处理（成功）
                     processed_questions.add(question_hash)
-                    await qa_event.send(qa_event.plain_result(f"💡 **回答:**\n\n{answer}\n\n继续提问或发送 '退出' 结束会话"))
+                    await qa_event.send(qa_event.plain_result(f"💡 **回答:**\n\n{answer}\n\n继续提问、发送 '/repo_qa' 切换仓库或发送 '退出' 结束会话"))
                 else:
-                    await qa_event.send(qa_event.plain_result("❌ 获取答案失败，请重试\n\n继续提问或发送 '退出' 结束会话"))
+                    await qa_event.send(qa_event.plain_result("❌ 获取答案失败，请重试\n\n继续提问、发送 '/repo_qa' 切换仓库或发送 '退出' 结束会话"))
                 
                 # 继续等待下一个问题
                 qa_controller.keep(timeout=600, reset_timeout=True)
                 
             except Exception as e:
                 logger.error(f"处理问题时出错: {e}")
-                await qa_event.send(qa_event.plain_result(f"❌ 处理问题时出错: {str(e)}\n\n继续提问或发送 '退出' 结束会话"))
+                await qa_event.send(qa_event.plain_result(f"❌ 处理问题时出错: {str(e)}\n\n继续提问、发送 '/repo_qa' 切换仓库或发送 '退出' 结束会话"))
                 qa_controller.keep(timeout=600, reset_timeout=True)
             finally:
                 # 无论成功还是失败，都要移除正在处理标记
