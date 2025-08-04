@@ -11,6 +11,7 @@ import asyncio
 import aiohttp
 import json
 import re
+import time
 from typing import Optional, Dict, Any
 from datetime import datetime
 import os
@@ -231,11 +232,32 @@ class Main(Star):
             
             # 检查是否为重复问题或正在处理的问题
             question_hash = hash(user_question)
+            
+            # 获取当前时间用于时间戳管理
+            current_time = time.time()
+            
+            # 初始化时间戳字典（如果不存在）
+            if not hasattr(self, '_question_timestamps'):
+                self._question_timestamps = {}
+            
+            # 清理过期的问题记录（超过30秒的）
+            expired_hashes = [h for h, timestamp in self._question_timestamps.items() 
+                            if current_time - timestamp > 30]
+            for h in expired_hashes:
+                processed_questions.discard(h)
+                self._question_timestamps.pop(h, None)
+            
             if question_hash in processed_questions:
-                logger.debug(f"跳过重复问题: {user_question}")
-                await qa_event.send(qa_event.plain_result("此问题刚刚已处理过，请稍等片刻或提出新问题"))
-                qa_controller.keep(timeout=1800, reset_timeout=True)
-                return
+                time_since_processed = current_time - self._question_timestamps.get(question_hash, 0)
+                if time_since_processed < 30:  # 30秒内认为是重复
+                    logger.debug(f"跳过重复问题: {user_question} (距离上次处理 {time_since_processed:.1f}秒)")
+                    await qa_event.send(qa_event.plain_result(f"⚠️ 此问题刚刚已处理过（{time_since_processed:.1f}秒前），请稍等片刻或提出新问题"))
+                    qa_controller.keep(timeout=1800, reset_timeout=True)
+                    return
+                else:
+                    # 超过30秒，允许重新处理
+                    processed_questions.discard(question_hash)
+                    self._question_timestamps.pop(question_hash, None)
             
             if question_hash in processing_questions:
                 logger.debug(f"问题正在处理中: {user_question}")
@@ -258,19 +280,22 @@ class Main(Star):
                 # 轮询查询结果
                 answer = await self._poll_query_result(query_session_id, qa_event)
                 if answer:
-                    # 标记问题为已处理（成功）
+                    # 标记问题为已处理（成功）并记录时间戳
                     processed_questions.add(question_hash)
+                    self._question_timestamps[question_hash] = current_time
                     await qa_event.send(qa_event.plain_result(f"💡 **回答:**\n\n{answer}\n\n继续提问、发送 '/repo_qa' 切换仓库或发送 '退出' 结束会话"))
                 else:
                     await qa_event.send(qa_event.plain_result("❌ 获取答案失败，请重试\n\n继续提问、发送 '/repo_qa' 切换仓库或发送 '退出' 结束会话"))
                 
                 # 继续等待下一个问题
                 qa_controller.keep(timeout=1800, reset_timeout=True)
+                return  # 重要：必须return，否则函数会结束导致session结束
                 
             except Exception as e:
                 logger.error(f"处理问题时出错: {e}")
                 await qa_event.send(qa_event.plain_result(f"❌ 处理问题时出错: {str(e)}\n\n继续提问、发送 '/repo_qa' 切换仓库或发送 '退出' 结束会话"))
                 qa_controller.keep(timeout=1800, reset_timeout=True)
+                return  # 重要：必须return，否则函数会结束导致session结束
             finally:
                 # 无论成功还是失败，都要移除正在处理标记
                 processing_questions.discard(question_hash)
