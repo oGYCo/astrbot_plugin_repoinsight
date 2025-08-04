@@ -93,10 +93,12 @@ class Main(Star):
                     return
                 
                 repo_url = user_input
-                await event.send(event.plain_result(f"📋 正在分析仓库: {repo_url}\n\n⏳ 请稍候..."))
+                
+                # 检查仓库是否已经分析过 - 先尝试直接查询
+                await event.send(event.plain_result(f"� 检查仓库状态: {repo_url}\n\n⏳ 请稍候..."))
                 
                 try:
-                    # 启动仓库分析
+                    # 启动仓库分析（后端会自动处理重复请求）
                     analysis_session_id = await self._start_repository_analysis(repo_url)
                     if not analysis_session_id:
                         await event.send(event.plain_result("❌ 启动仓库分析失败，请稍后重试"))
@@ -124,12 +126,12 @@ class Main(Star):
                         f"发送 '退出' 结束会话"
                     ))
                     
-                    # 进入问答循环
-                    await self._enter_qa_loop(controller, event, analysis_session_id)
+                    # 进入问答循环，使用仓库URL作为session_id
+                    await self._enter_qa_loop(controller, event, repo_url)
                     
                 except Exception as e:
-                    logger.error(f"仓库分析过程出错: {e}")
-                    await event.send(event.plain_result(f"❌ 分析过程出错: {str(e)}"))
+                    logger.error(f"仓库处理过程出错: {e}")
+                    await event.send(event.plain_result(f"❌ 处理过程出错: {str(e)}"))
                     controller.stop()
             
             try:
@@ -146,7 +148,7 @@ class Main(Star):
             logger.error(f"启动仓库问答会话失败: {e}")
             yield event.plain_result(f"❌ 启动会话失败: {str(e)}")
     
-    async def _enter_qa_loop(self, controller: SessionController, event: AstrMessageEvent, analysis_session_id: str):
+    async def _enter_qa_loop(self, controller: SessionController, event: AstrMessageEvent, session_id: str):
         """进入问答循环"""
         # 用于跟踪已处理的问题，避免重复处理
         processed_questions = set()
@@ -167,7 +169,11 @@ class Main(Star):
             # 检查是否为退出命令
             if user_question.lower() in ['退出', 'exit', 'quit', '取消']:
                 await qa_event.send(qa_event.plain_result("👋 感谢使用 RepoInsight！"))
-                await self.state_manager.remove_task(analysis_session_id)
+                # 如果session_id是URL格式，则不需要从任务管理器中移除
+                if session_id.startswith('http'):
+                    logger.info(f"结束仓库问答会话: {session_id}")
+                else:
+                    await self.state_manager.remove_task(session_id)
                 qa_controller.stop()
                 controller.stop()  # 同时停止外层控制器
                 return
@@ -188,13 +194,13 @@ class Main(Star):
             
             # 标记问题为正在处理
             processing_questions.add(question_hash)
-            logger.info(f"开始处理问题: {user_question[:50]}... (hash: {question_hash})")
+            logger.info(f"开始处理问题: {user_question[:50]}... (hash: {question_hash}) - 仓库: {session_id}")
             
             await qa_event.send(qa_event.plain_result(f"🤔 正在思考您的问题: {user_question}\n\n⏳ 请稍候..."))
             
             try:
-                # 提交查询请求
-                query_session_id = await self._submit_query(analysis_session_id, user_question)
+                # 提交查询请求，使用session_id（可能是URL或分析会话ID）
+                query_session_id = await self._submit_query(session_id, user_question)
                 if not query_session_id:
                     await qa_event.send(qa_event.plain_result("❌ 提交问题失败，请重试\n\n继续提问或发送 '退出' 结束会话"))
                     qa_controller.keep(timeout=600, reset_timeout=True)
@@ -225,11 +231,15 @@ class Main(Star):
             await qa_loop_waiter(event)
         except TimeoutError:
             await event.send(event.plain_result("⏰ 问答会话超时，已自动退出"))
-            await self.state_manager.remove_task(analysis_session_id)
+            # 如果session_id不是URL格式，才从任务管理器中移除
+            if not session_id.startswith('http'):
+                await self.state_manager.remove_task(session_id)
         except Exception as e:
             logger.error(f"问答循环出错: {e}")
             await event.send(event.plain_result(f"❌ 问答循环出错: {str(e)}"))
-            await self.state_manager.remove_task(analysis_session_id)
+            # 如果session_id不是URL格式，才从任务管理器中移除
+            if not session_id.startswith('http'):
+                await self.state_manager.remove_task(session_id)
     
     def _is_valid_github_url(self, url: str) -> bool:
         """验证GitHub URL格式"""
@@ -302,12 +312,12 @@ class Main(Star):
             logger.error(f"轮询分析状态失败: {e}")
             return None
     
-    async def _submit_query(self, analysis_session_id: str, question: str) -> Optional[str]:
+    async def _submit_query(self, session_id: str, question: str) -> Optional[str]:
         """提交查询请求"""
         try:
             async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=self.timeout)) as session:
                 payload = {
-                    "session_id": analysis_session_id,
+                    "session_id": session_id,
                     "question": question,
                     "generation_mode": "service",
                     "llm_config": self.llm_config
