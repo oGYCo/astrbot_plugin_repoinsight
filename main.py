@@ -26,7 +26,7 @@ class Main(Star):
         self.astrbot_config = config
         
         # 获取配置参数
-        self.api_base_url = self.plugin_config.get("api_base_url", "http://localhost:8000") if self.plugin_config else "http://localhost:8000"
+        self.api_base_url = self.plugin_config.get("api_base_url", "http://api:8000") if self.plugin_config else "http://api:8000"
         self.timeout = self.plugin_config.get("timeout", 30) if self.plugin_config else 30
         self.poll_interval = self.plugin_config.get("poll_interval", 5) if self.plugin_config else 5
         
