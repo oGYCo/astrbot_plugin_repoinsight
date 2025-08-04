@@ -148,11 +148,23 @@ class Main(Star):
     
     async def _enter_qa_loop(self, controller: SessionController, event: AstrMessageEvent, analysis_session_id: str):
         """进入问答循环"""
+        # 用于跟踪已处理的问题，避免重复处理
+        processed_questions = set()
+        # 用于跟踪正在处理的问题，防止并发处理同一问题
+        processing_questions = set()
+        
         # 创建嵌套的session_waiter来处理问答循环
         @session_waiter(timeout=600, record_history_chains=False)
         async def qa_loop_waiter(qa_controller: SessionController, qa_event: AstrMessageEvent):
             user_question = qa_event.message_str.strip()
             
+            # 检查是否为空消息
+            if not user_question:
+                await qa_event.send(qa_event.plain_result("请输入您的问题，或发送 '退出' 结束会话"))
+                qa_controller.keep(timeout=600, reset_timeout=True)
+                return
+            
+            # 检查是否为退出命令
             if user_question.lower() in ['退出', 'exit', 'quit', '取消']:
                 await qa_event.send(qa_event.plain_result("👋 感谢使用 RepoInsight！"))
                 await self.state_manager.remove_task(analysis_session_id)
@@ -160,10 +172,23 @@ class Main(Star):
                 controller.stop()  # 同时停止外层控制器
                 return
             
-            if not user_question:
-                await qa_event.send(qa_event.plain_result("请输入您的问题，或发送 '退出' 结束会话"))
+            # 检查是否为重复问题或正在处理的问题
+            question_hash = hash(user_question)
+            if question_hash in processed_questions:
+                logger.debug(f"跳过重复问题: {user_question}")
+                await qa_event.send(qa_event.plain_result("此问题刚刚已处理过，请稍等片刻或提出新问题"))
                 qa_controller.keep(timeout=600, reset_timeout=True)
                 return
+            
+            if question_hash in processing_questions:
+                logger.debug(f"问题正在处理中: {user_question}")
+                await qa_event.send(qa_event.plain_result("此问题正在处理中，请稍候..."))
+                qa_controller.keep(timeout=600, reset_timeout=True)
+                return
+            
+            # 标记问题为正在处理
+            processing_questions.add(question_hash)
+            logger.info(f"开始处理问题: {user_question[:50]}... (hash: {question_hash})")
             
             await qa_event.send(qa_event.plain_result(f"🤔 正在思考您的问题: {user_question}\n\n⏳ 请稍候..."))
             
@@ -178,6 +203,8 @@ class Main(Star):
                 # 轮询查询结果
                 answer = await self._poll_query_result(query_session_id, qa_event)
                 if answer:
+                    # 标记问题为已处理（成功）
+                    processed_questions.add(question_hash)
                     await qa_event.send(qa_event.plain_result(f"💡 **回答:**\n\n{answer}\n\n继续提问或发送 '退出' 结束会话"))
                 else:
                     await qa_event.send(qa_event.plain_result("❌ 获取答案失败，请重试\n\n继续提问或发送 '退出' 结束会话"))
@@ -189,6 +216,9 @@ class Main(Star):
                 logger.error(f"处理问题时出错: {e}")
                 await qa_event.send(qa_event.plain_result(f"❌ 处理问题时出错: {str(e)}\n\n继续提问或发送 '退出' 结束会话"))
                 qa_controller.keep(timeout=600, reset_timeout=True)
+            finally:
+                # 无论成功还是失败，都要移除正在处理标记
+                processing_questions.discard(question_hash)
         
         # 启动问答循环
         try:
