@@ -14,6 +14,7 @@ import re
 from typing import Optional, Dict, Any
 from datetime import datetime
 import os
+import aiosqlite
 
 
 @register("RepoInsight", "oGYCo", "GitHub仓库智能问答插件，支持仓库分析和智能问答", "1.0.0")
@@ -140,7 +141,7 @@ class Main(Star):
             try:
                 await repo_qa_waiter(event)
             except TimeoutError:
-                yield event.plain_result("⏰ 会话超时，已自动退出")
+                yield event.plain_result("⏰ 会话已超时（5分钟无活动）\n\n💡 您可以随时发送 '/repo_qa' 重新开始")
             except Exception as e:
                 logger.error(f"会话处理出错: {e}")
                 yield event.plain_result(f"❌ 会话处理出错: {str(e)}")
@@ -158,15 +159,15 @@ class Main(Star):
         # 用于跟踪正在处理的问题，防止并发处理同一问题
         processing_questions = set()
         
-        # 创建嵌套的session_waiter来处理问答循环
-        @session_waiter(timeout=600, record_history_chains=False)
+        # 创建嵌套的session_waiter来处理问答循环 - 设置更长的超时时间（30分钟）
+        @session_waiter(timeout=1800, record_history_chains=False)
         async def qa_loop_waiter(qa_controller: SessionController, qa_event: AstrMessageEvent):
             user_question = qa_event.message_str.strip()
             
             # 检查是否为空消息
             if not user_question:
                 await qa_event.send(qa_event.plain_result("请输入您的问题，或发送 '退出' 结束会话，或发送 '/repo_qa' 切换仓库"))
-                qa_controller.keep(timeout=600, reset_timeout=True)
+                qa_controller.keep(timeout=1800, reset_timeout=True)
                 return
             
             # 检查是否为退出命令
@@ -196,7 +197,7 @@ class Main(Star):
                     analysis_session_id = await self._start_repository_analysis(user_question)
                     if not analysis_session_id:
                         await qa_event.send(qa_event.plain_result("❌ 启动新仓库分析失败，继续使用当前仓库"))
-                        qa_controller.keep(timeout=600, reset_timeout=True)
+                        qa_controller.keep(timeout=1800, reset_timeout=True)
                         return
                     
                     await self.state_manager.add_task(analysis_session_id, user_question, qa_event.unified_msg_origin)
@@ -205,7 +206,7 @@ class Main(Star):
                     if not analysis_result:
                         await self.state_manager.remove_task(analysis_session_id)
                         await qa_event.send(qa_event.plain_result("❌ 新仓库分析失败，继续使用当前仓库"))
-                        qa_controller.keep(timeout=600, reset_timeout=True)
+                        qa_controller.keep(timeout=1800, reset_timeout=True)
                         return
                     
                     await qa_event.send(qa_event.plain_result(
@@ -225,7 +226,7 @@ class Main(Star):
                 except Exception as e:
                     logger.error(f"切换仓库时出错: {e}")
                     await qa_event.send(qa_event.plain_result(f"❌ 切换仓库失败: {str(e)}\n\n继续使用当前仓库"))
-                    qa_controller.keep(timeout=600, reset_timeout=True)
+                    qa_controller.keep(timeout=1800, reset_timeout=True)
                     return
             
             # 检查是否为重复问题或正在处理的问题
@@ -233,27 +234,25 @@ class Main(Star):
             if question_hash in processed_questions:
                 logger.debug(f"跳过重复问题: {user_question}")
                 await qa_event.send(qa_event.plain_result("此问题刚刚已处理过，请稍等片刻或提出新问题"))
-                qa_controller.keep(timeout=600, reset_timeout=True)
+                qa_controller.keep(timeout=1800, reset_timeout=True)
                 return
             
             if question_hash in processing_questions:
                 logger.debug(f"问题正在处理中: {user_question}")
                 await qa_event.send(qa_event.plain_result("此问题正在处理中，请稍候..."))
-                qa_controller.keep(timeout=600, reset_timeout=True)
+                qa_controller.keep(timeout=1800, reset_timeout=True)
                 return
             
             # 标记问题为正在处理
             processing_questions.add(question_hash)
             logger.info(f"开始处理问题: {user_question[:50]}... (hash: {question_hash}) - 仓库: {session_id}")
-            
-            await qa_event.send(qa_event.plain_result(f"🤔 正在思考您的问题: {user_question}\n\n⏳ 请稍候..."))
-            
+                 
             try:
                 # 提交查询请求，使用session_id（可能是URL或分析会话ID）
                 query_session_id = await self._submit_query(session_id, user_question)
                 if not query_session_id:
                     await qa_event.send(qa_event.plain_result("❌ 提交问题失败，请重试\n\n继续提问、发送 '/repo_qa' 切换仓库或发送 '退出' 结束会话"))
-                    qa_controller.keep(timeout=600, reset_timeout=True)
+                    qa_controller.keep(timeout=1800, reset_timeout=True)
                     return
                 
                 # 轮询查询结果
@@ -266,12 +265,12 @@ class Main(Star):
                     await qa_event.send(qa_event.plain_result("❌ 获取答案失败，请重试\n\n继续提问、发送 '/repo_qa' 切换仓库或发送 '退出' 结束会话"))
                 
                 # 继续等待下一个问题
-                qa_controller.keep(timeout=600, reset_timeout=True)
+                qa_controller.keep(timeout=1800, reset_timeout=True)
                 
             except Exception as e:
                 logger.error(f"处理问题时出错: {e}")
                 await qa_event.send(qa_event.plain_result(f"❌ 处理问题时出错: {str(e)}\n\n继续提问、发送 '/repo_qa' 切换仓库或发送 '退出' 结束会话"))
-                qa_controller.keep(timeout=600, reset_timeout=True)
+                qa_controller.keep(timeout=1800, reset_timeout=True)
             finally:
                 # 无论成功还是失败，都要移除正在处理标记
                 processing_questions.discard(question_hash)
@@ -280,7 +279,7 @@ class Main(Star):
         try:
             await qa_loop_waiter(event)
         except TimeoutError:
-            await event.send(event.plain_result("⏰ 问答会话超时，已自动退出"))
+            await event.send(event.plain_result("⏰ 会话已超时（30分钟无活动）\n\n💡 您可以随时发送 '/repo_qa' 重新开始会话"))
             # 如果session_id不是URL格式，才从任务管理器中移除
             if not session_id.startswith('http'):
                 await self.state_manager.remove_task(session_id)
@@ -340,19 +339,8 @@ class Main(Star):
                                 await event.send(event.plain_result(f"❌ 分析失败: {error_msg}"))
                                 return None
                             elif status in ['queued', 'processing']:
-                                # 显示进度
-                                processed = result.get('processed_files', 0)
-                                total = result.get('total_files', 0)
-                                if total > 0:
-                                    progress = f"({processed}/{total})"
-                                else:
-                                    progress = ""
-                                
-                                await event.send(event.plain_result(
-                                    f"📊 分析进行中... {progress}\n\n"
-                                    f"状态: {status}\n"
-                                    f"请耐心等待..."
-                                ))
+                                # 静默等待，不发送进度消息
+                                pass
                             
                             await asyncio.sleep(self.poll_interval)
                         else:
@@ -550,7 +538,6 @@ class StateManager:
     async def _init_db(self):
         """初始化数据库"""
         try:
-            import aiosqlite
             async with aiosqlite.connect(self.db_path) as db:
                 await db.execute("""
                     CREATE TABLE IF NOT EXISTS analysis_tasks (
@@ -571,7 +558,6 @@ class StateManager:
         """添加分析任务"""
         try:
             await self._init_db_task  # 等待数据库初始化完成
-            import aiosqlite
             async with aiosqlite.connect(self.db_path) as db:
                 await db.execute(
                     "INSERT OR REPLACE INTO analysis_tasks (session_id, repo_url, user_origin, created_at) VALUES (?, ?, ?, ?)",
@@ -587,7 +573,6 @@ class StateManager:
         """移除分析任务"""
         try:
             await self._init_db_task
-            import aiosqlite
             async with aiosqlite.connect(self.db_path) as db:
                 await db.execute("DELETE FROM analysis_tasks WHERE session_id = ?", (session_id,))
                 await db.commit()
@@ -600,7 +585,6 @@ class StateManager:
         """获取所有待处理任务"""
         try:
             await self._init_db_task
-            import aiosqlite
             async with aiosqlite.connect(self.db_path) as db:
                 cursor = await db.execute("SELECT * FROM analysis_tasks WHERE status = 'pending'")
                 rows = await cursor.fetchall()
@@ -624,7 +608,6 @@ class StateManager:
         """获取用户的所有任务"""
         try:
             await self._init_db_task
-            import aiosqlite
             async with aiosqlite.connect(self.db_path) as db:
                 cursor = await db.execute(
                     "SELECT * FROM analysis_tasks WHERE user_origin = ? ORDER BY created_at DESC",
