@@ -82,170 +82,178 @@ class Main(Star):
             # 发送初始消息
             await event.send(event.plain_result("请发送您要分析的 GitHub 仓库 URL\n💡 分析完成后，您可以随时发送新的仓库URL或 '/repo_qa' 命令来切换仓库"))
             
-            # 使用一个统一的 session_waiter 来处理整个流程
-            @session_waiter(timeout=7200, record_history_chains=False)
-            async def unified_session_handler(controller: SessionController, event: AstrMessageEvent):
-                """统一的会话处理器 - 处理仓库分析和问答的完整流程"""
+            # 使用正确的session_waiter模式
+            @session_waiter(timeout=7200)
+            async def session_handler(controller: SessionController, event: AstrMessageEvent):
+                """处理会话的函数 - 使用状态管理的事件驱动模式"""
+                logger.info(f"进入session_handler，当前状态: {self.state_manager.user_states}")
                 
-                # 状态变量
-                current_repo_url = None
-                analysis_session_id = None
-                processing_questions = set()
+                # 获取或初始化当前用户的状态
+                user_id = event.unified_msg_origin
+                user_state = await self.state_manager.get_user_state(user_id)
                 
-                # 持续循环，直到用户退出或会话超时
-                while True:
-                    logger.info(f"=== 统一会话处理器等待用户输入 ===")
+                # 重要：禁止AstrBot默认的LLM调用，避免冲突
+                event.should_call_llm(False)
+                
+                user_input = event.message_str.strip()
+                
+                # 检查是否为空消息
+                if not user_input:
+                    if user_state.get('current_repo_url'):
+                        await event.send(event.plain_result("请输入您的问题，或发送 '退出' 结束会话，或发送 '/repo_qa' 切换仓库"))
+                    else:
+                        await event.send(event.plain_result("请发送您要分析的 GitHub 仓库 URL"))
+                    return
+                
+                # 检查是否为退出命令
+                if user_input.lower() in ['退出', 'exit', 'quit', '取消']:
+                    await event.send(event.plain_result("👋 感谢使用 RepoInsight！"))
+                    if user_state.get('analysis_session_id'):
+                        await self.state_manager.remove_task(user_state['analysis_session_id'])
+                    await self.state_manager.clear_user_state(user_id)
+                    controller.stop()
+                    return
+                
+                # 检查是否为切换仓库命令
+                if user_input.lower().startswith('/repo_qa') or user_input.lower().startswith('repo_qa'):
+                    await event.send(event.plain_result("🔄 请发送您要分析的新 GitHub 仓库 URL："))
+                    # 重置状态
+                    await self.state_manager.clear_user_state(user_id)
+                    return
+                
+                # 如果还没有分析仓库，或者用户输入了新的GitHub URL
+                if not user_state.get('current_repo_url') or self._is_valid_github_url(user_input):
+                    # 验证GitHub URL
+                    if not self._is_valid_github_url(user_input):
+                        await event.send(event.plain_result(
+                            "❌ 请输入有效的 GitHub 仓库 URL\n\n"
+                            "示例: https://github.com/user/repo\n\n"
+                            "或发送 '退出' 结束会话"
+                        ))
+                        return
                     
-                    # 等待用户的下一个消息
+                    repo_url = user_input
+                    logger.info(f"开始处理仓库URL: {repo_url}")
+                    
+                    # 如果是切换到新仓库
+                    current_repo_url = user_state.get('current_repo_url')
+                    if current_repo_url and repo_url != current_repo_url:
+                        await event.send(event.plain_result(f"🔄 检测到新仓库URL，正在切换分析...\n\n🔗 新仓库: {repo_url}"))
+                    else:
+                        await event.send(event.plain_result(f"🔍 开始分析仓库，⏳请稍候..."))
+                    
                     try:
-                        current_event = await controller.wait()
-                        logger.info(f"=== 收到用户输入: {current_event.message_str} ===")
-                        # 重要：禁止AstrBot默认的LLM调用，避免冲突
-                        current_event.should_call_llm(False)
+                        # 启动仓库分析
+                        logger.info(f"启动仓库分析: {repo_url}")
+                        new_analysis_session_id = await self._start_repository_analysis(repo_url)
+                        logger.info(f"分析会话ID: {new_analysis_session_id}")
                         
-                        user_input = current_event.message_str.strip()
-                        
-                        # 检查是否为空消息
-                        if not user_input:
-                            if current_repo_url:
-                                await current_event.send(current_event.plain_result("请输入您的问题，或发送 '退出' 结束会话，或发送 '/repo_qa' 切换仓库"))
-                            else:
-                                await current_event.send(current_event.plain_result("请发送您要分析的 GitHub 仓库 URL"))
-                            continue
-                        
-                        # 检查是否为退出命令
-                        if user_input.lower() in ['退出', 'exit', 'quit', '取消']:
-                            await current_event.send(current_event.plain_result("👋 感谢使用 RepoInsight！"))
-                            if analysis_session_id:
-                                await self.state_manager.remove_task(analysis_session_id)
-                            controller.stop()
+                        if not new_analysis_session_id:
+                            logger.error("启动仓库分析失败")
+                            await event.send(event.plain_result("❌ 启动仓库分析失败，请稍后重试或尝试其他仓库"))
                             return
                         
-                        # 检查是否为切换仓库命令
-                        if user_input.lower().startswith('/repo_qa') or user_input.lower().startswith('repo_qa'):
-                            await current_event.send(current_event.plain_result("� 请发送您要分析的新 GitHub 仓库 URL："))
-                            # 重置状态，继续等待新的仓库URL
-                            current_repo_url = None
-                            analysis_session_id = None
-                            processing_questions = set()
-                            continue
+                        # 保存任务状态
+                        await self.state_manager.add_task(new_analysis_session_id, repo_url, user_id)
                         
-                        # 如果还没有分析仓库，或者用户输入了新的GitHub URL
-                        if not current_repo_url or self._is_valid_github_url(user_input):
-                            # 验证GitHub URL
-                            if not self._is_valid_github_url(user_input):
-                                await current_event.send(current_event.plain_result(
-                                    "❌ 请输入有效的 GitHub 仓库 URL\n\n"
-                                    "示例: https://github.com/user/repo\n\n"
-                                    "或发送 '退出' 结束会话"
-                                ))
-                                continue
-                            
-                            repo_url = user_input
-                            logger.info(f"开始处理仓库URL: {repo_url}")
-                            
-                            # 如果是切换到新仓库
-                            if current_repo_url and repo_url != current_repo_url:
-                                await current_event.send(current_event.plain_result(f"🔄 检测到新仓库URL，正在切换分析...\n\n🔗 新仓库: {repo_url}"))
-                            else:
-                                await current_event.send(current_event.plain_result(f"🔍 开始分析仓库，⏳请稍候..."))
-                            
-                            try:
-                                # 启动仓库分析
-                                logger.info(f"启动仓库分析: {repo_url}")
-                                new_analysis_session_id = await self._start_repository_analysis(repo_url)
-                                logger.info(f"分析会话ID: {new_analysis_session_id}")
-                                
-                                if not new_analysis_session_id:
-                                    logger.error("启动仓库分析失败")
-                                    await current_event.send(current_event.plain_result("❌ 启动仓库分析失败，请稍后重试或尝试其他仓库"))
-                                    continue
-                                
-                                # 保存任务状态
-                                await self.state_manager.add_task(new_analysis_session_id, repo_url, current_event.unified_msg_origin)
-                                
-                                # 轮询分析状态
-                                analysis_result = await self._poll_analysis_status(new_analysis_session_id, current_event)
-                                if not analysis_result:
-                                    await self.state_manager.remove_task(new_analysis_session_id)
-                                    await current_event.send(current_event.plain_result("❌ 仓库分析失败，请稍后重试或尝试其他仓库"))
-                                    continue
-                                
-                                # 分析成功，更新状态
-                                current_repo_url = repo_url
-                                analysis_session_id = new_analysis_session_id
-                                processing_questions = set()  # 重置处理中的问题集合
-                                
-                                await current_event.send(current_event.plain_result(
-                                    f"✅ 仓库分析完成！现在您可以开始提问了！\n"
-                                    f"💡 **提示:**\n"
-                                    f"• 发送问题进行仓库问答\n"
-                                    f"• 发送新的仓库URL可以快速切换\n"
-                                    f"• 发送 '/repo_qa' 切换到新仓库\n"
-                                    f"• 发送 '退出' 结束会话"
-                                ))
-                                continue  # 继续等待用户问题
-                                
-                            except Exception as e:
-                                logger.error(f"仓库处理过程出错: {e}")
-                                await current_event.send(current_event.plain_result(f"❌ 处理过程出错: {str(e)}"))
-                                continue
+                        # 轮询分析状态
+                        analysis_result = await self._poll_analysis_status(new_analysis_session_id, event)
+                        if not analysis_result:
+                            await self.state_manager.remove_task(new_analysis_session_id)
+                            await event.send(event.plain_result("❌ 仓库分析失败，请稍后重试或尝试其他仓库"))
+                            return
                         
-                        # 如果已经有分析好的仓库，处理用户问题
-                        elif current_repo_url and analysis_session_id:
-                            user_question = user_input
-                            
-                            # 检查是否正在处理相同问题（防止并发处理）
-                            question_hash = hash(user_question)
-                            
-                            if question_hash in processing_questions:
-                                logger.info(f"问题正在处理中: {user_question}")
-                                await current_event.send(current_event.plain_result("此问题正在处理中，请稍候..."))
-                                continue
-                            
-                            # 标记问题为正在处理
-                            processing_questions.add(question_hash)
-                            logger.info(f"开始处理问题: {user_question[:50]}... - 仓库: {current_repo_url}")
-                                 
-                            try:
-                                # 提交查询请求，使用仓库URL作为session_id
-                                query_session_id = await self._submit_query(current_repo_url, user_question)
-                                if not query_session_id:
-                                    await current_event.send(current_event.plain_result("❌ 提交问题失败，请重试"))
-                                    processing_questions.discard(question_hash)
-                                    continue
-                                
-                                # 轮询查询结果
-                                answer = await self._poll_query_result(query_session_id, current_event)
-                                if answer:
-                                    # 智能分段发送长回答
-                                    await self._send_long_message(current_event, f"💡 **回答:**\n\n{answer}")
-                                else:
-                                    await current_event.send(current_event.plain_result("❌ 获取答案失败，请重试"))
-                                
-                                # 继续等待下一个问题
-                                continue
-                                
-                            except Exception as e:
-                                logger.error(f"处理问题时出错: {e}")
-                                await current_event.send(current_event.plain_result(f"❌ 处理问题时出错: {str(e)}"))
-                                continue
-                            finally:
-                                # 无论成功还是失败，都要移除正在处理标记
-                                processing_questions.discard(question_hash)
+                        # 分析成功，更新用户状态
+                        await self.state_manager.set_user_state(user_id, {
+                            'current_repo_url': repo_url,
+                            'analysis_session_id': new_analysis_session_id,
+                            'processing_questions': set()
+                        })
                         
-                        else:
-                            # 应该不会到达这里，但保险起见
-                            await current_event.send(current_event.plain_result("请发送您要分析的 GitHub 仓库 URL"))
-                            continue
-                    
+                        await event.send(event.plain_result(
+                            f"✅ 仓库分析完成！现在您可以开始提问了！\n"
+                            f"💡 **提示:**\n"
+                            f"• 发送问题进行仓库问答\n"
+                            f"• 发送新的仓库URL可以快速切换\n"
+                            f"• 发送 '/repo_qa' 切换到新仓库\n"
+                            f"• 发送 '退出' 结束会话"
+                        ))
+                        return
+                        
                     except Exception as e:
-                        logger.error(f"统一会话处理器等待用户输入时出错: {e}")
-                        # 如果等待出错，尝试继续循环
-                        continue
+                        logger.error(f"仓库处理过程出错: {e}")
+                        await event.send(event.plain_result(f"❌ 处理过程出错: {str(e)}"))
+                        return
+                
+                # 如果已经有分析好的仓库，处理用户问题
+                elif user_state.get('current_repo_url') and user_state.get('analysis_session_id'):
+                    user_question = user_input
+                    current_repo_url = user_state['current_repo_url']
+                    analysis_session_id = user_state['analysis_session_id']
+                    processing_questions = user_state.get('processing_questions', set())
+                    
+                    # 检查是否正在处理相同问题（防止并发处理）
+                    question_hash = hash(user_question)
+                    
+                    if question_hash in processing_questions:
+                        logger.info(f"问题正在处理中: {user_question}")
+                        await event.send(event.plain_result("此问题正在处理中，请稍候..."))
+                        return
+                    
+                    # 标记问题为正在处理
+                    processing_questions.add(question_hash)
+                    await self.state_manager.set_user_state(user_id, {
+                        **user_state,
+                        'processing_questions': processing_questions
+                    })
+                    
+                    logger.info(f"开始处理问题: {user_question[:50]}... - 仓库: {current_repo_url}")
+                         
+                    try:
+                        # 提交查询请求，使用仓库URL作为session_id
+                        query_session_id = await self._submit_query(analysis_session_id, user_question)
+                        if not query_session_id:
+                            await event.send(event.plain_result("❌ 提交问题失败，请重试"))
+                            return
+                        
+                        # 轮询查询结果
+                        answer = await self._poll_query_result(query_session_id, event)
+                        if answer:
+                            # 智能分段发送长回答
+                            await self._send_long_message(event, f"💡 **回答:**\n\n{answer}")
+                        else:
+                            await event.send(event.plain_result("❌ 获取答案失败，请重试"))
+                        
+                        return
+                        
+                    except Exception as e:
+                        logger.error(f"处理问题时出错: {e}")
+                        await event.send(event.plain_result(f"❌ 处理问题时出错: {str(e)}"))
+                        return
+                    finally:
+                        # 无论成功还是失败，都要移除正在处理标记
+                        processing_questions.discard(question_hash)
+                        await self.state_manager.set_user_state(user_id, {
+                            **user_state,
+                            'processing_questions': processing_questions
+                        })
+                
+                else:
+                    # 应该不会到达这里，但保险起见
+                    await event.send(event.plain_result("请发送您要分析的 GitHub 仓库 URL"))
+                    return
             
-            # 启动统一的会话处理器
-            await unified_session_handler(event)
+            # 启动会话处理器
+            try:
+                await session_handler(event)
+            except TimeoutError:
+                await event.send(event.plain_result("⏰ 会话超时，请重新发送 /repo_qa 命令开始新的会话"))
+            except Exception as e:
+                logger.error(f"会话处理器异常: {e}")
+                await event.send(event.plain_result(f"❌ 会话异常: {str(e)}"))
+            finally:
+                # 清理会话状态
+                event.stop_event()
             
         except Exception as e:
             logger.error(f"启动仓库问答会话失败: {e}")
@@ -629,6 +637,8 @@ class StateManager:
         self.db_path = os.path.join("data", "repoinsight_tasks.db")
         self._ensure_data_dir()
         self._init_db_task = asyncio.create_task(self._init_db())
+        # 内存中的用户状态缓存
+        self.user_states = {}
     
     def _ensure_data_dir(self):
         """确保data目录存在"""
@@ -638,6 +648,7 @@ class StateManager:
         """初始化数据库"""
         try:
             async with aiosqlite.connect(self.db_path) as db:
+                # 分析任务表
                 await db.execute("""
                     CREATE TABLE IF NOT EXISTS analysis_tasks (
                         session_id TEXT PRIMARY KEY,
@@ -647,11 +658,92 @@ class StateManager:
                         status TEXT DEFAULT 'pending'
                     )
                 """)
+                # 用户状态表
+                await db.execute("""
+                    CREATE TABLE IF NOT EXISTS user_states (
+                        user_id TEXT PRIMARY KEY,
+                        current_repo_url TEXT,
+                        analysis_session_id TEXT,
+                        updated_at TEXT NOT NULL
+                    )
+                """)
                 await db.commit()
         except ImportError:
             logger.warning("aiosqlite未安装，状态持久化功能将不可用")
         except Exception as e:
             logger.error(f"初始化数据库失败: {e}")
+    
+    async def get_user_state(self, user_id: str) -> Dict[str, Any]:
+        """获取用户状态"""
+        # 首先检查内存缓存
+        if user_id in self.user_states:
+            return self.user_states[user_id]
+        
+        # 从数据库读取
+        try:
+            await self._init_db_task
+            async with aiosqlite.connect(self.db_path) as db:
+                cursor = await db.execute(
+                    "SELECT current_repo_url, analysis_session_id FROM user_states WHERE user_id = ?",
+                    (user_id,)
+                )
+                row = await cursor.fetchone()
+                if row:
+                    state = {
+                        'current_repo_url': row[0],
+                        'analysis_session_id': row[1],
+                        'processing_questions': set()
+                    }
+                    self.user_states[user_id] = state
+                    return state
+        except Exception as e:
+            logger.error(f"获取用户状态失败: {e}")
+        
+        # 返回默认状态
+        default_state = {
+            'current_repo_url': None,
+            'analysis_session_id': None,
+            'processing_questions': set()
+        }
+        self.user_states[user_id] = default_state
+        return default_state
+    
+    async def set_user_state(self, user_id: str, state: Dict[str, Any]):
+        """设置用户状态"""
+        # 更新内存缓存
+        self.user_states[user_id] = state
+        
+        # 保存到数据库
+        try:
+            await self._init_db_task
+            async with aiosqlite.connect(self.db_path) as db:
+                await db.execute("""
+                    INSERT OR REPLACE INTO user_states 
+                    (user_id, current_repo_url, analysis_session_id, updated_at) 
+                    VALUES (?, ?, ?, ?)
+                """, (
+                    user_id,
+                    state.get('current_repo_url'),
+                    state.get('analysis_session_id'),
+                    datetime.now().isoformat()
+                ))
+                await db.commit()
+        except Exception as e:
+            logger.error(f"设置用户状态失败: {e}")
+    
+    async def clear_user_state(self, user_id: str):
+        """清除用户状态"""
+        # 清除内存缓存
+        self.user_states.pop(user_id, None)
+        
+        # 从数据库删除
+        try:
+            await self._init_db_task
+            async with aiosqlite.connect(self.db_path) as db:
+                await db.execute("DELETE FROM user_states WHERE user_id = ?", (user_id,))
+                await db.commit()
+        except Exception as e:
+            logger.error(f"清除用户状态失败: {e}")
     
     async def add_task(self, session_id: str, repo_url: str, user_origin: str):
         """添加分析任务"""
