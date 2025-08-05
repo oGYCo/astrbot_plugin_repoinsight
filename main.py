@@ -75,7 +75,7 @@ class Main(Star):
         try:
             yield event.plain_result("请发送您要分析的 GitHub 仓库 URL\n💡 分析完成后，您可以随时发送新的仓库URL或 '/repo_qa' 命令来切换仓库")
             
-            @session_waiter(record_history_chains=False)
+            @session_waiter(timeout=3600, record_history_chains=False)  # 设置1小时超时
             async def repo_qa_waiter(controller: SessionController, event: AstrMessageEvent):
                 user_input = event.message_str.strip()
                 
@@ -152,8 +152,8 @@ class Main(Star):
         # 用于跟踪正在处理的问题，防止并发处理同一问题
         processing_questions = set()
         
-        # 创建嵌套的session_waiter来处理问答循环 - 无超时限制
-        @session_waiter(record_history_chains=False)
+        # 创建嵌套的session_waiter来处理问答循环 - 设置1小时超时
+        @session_waiter(timeout=3600, record_history_chains=False)
         async def qa_loop_waiter(qa_controller: SessionController, qa_event: AstrMessageEvent):
             user_question = qa_event.message_str.strip()
             
@@ -560,7 +560,7 @@ class Main(Star):
 
 **API 配置:**
 • 服务地址: {self.api_base_url}
- • 分析超时: {self.timeout}秒
+• 分析超时: {self.timeout}秒
 • 查询超时: {self.query_timeout}秒
 • 轮询间隔: {self.poll_interval}秒
 
