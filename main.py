@@ -235,6 +235,7 @@ class Main(Star):
                 query_session_id = await self._submit_query(session_id, user_question)
                 if not query_session_id:
                     await qa_event.send(qa_event.plain_result("❌ 提交问题失败，请重试"))
+                    processing_questions.discard(question_hash)  # 清理处理标记
                     qa_controller.keep(reset_timeout=True)
                     return
                 
