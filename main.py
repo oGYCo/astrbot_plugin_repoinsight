@@ -344,6 +344,7 @@ class Main(Star):
     async def _submit_query(self, session_id: str, question: str) -> Optional[str]:
         """提交查询请求"""
         try:
+            logger.info(f"提交查询请求: session_id={session_id}, question={question[:100]}...")
             async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=self.query_timeout)) as session:
                 payload = {
                     "session_id": session_id,
@@ -352,6 +353,8 @@ class Main(Star):
                     "llm_config": self.llm_config
                 }
                 
+                logger.info(f"请求载荷: {payload}")
+                
                 async with session.post(
                     f"{self.api_base_url}/api/v1/repos/query",
                     json=payload,
@@ -359,7 +362,9 @@ class Main(Star):
                 ) as response:
                     if response.status == 200:
                         result = await response.json()
-                        return result.get('session_id')  # 这是查询的session_id
+                        query_session_id = result.get('session_id')
+                        logger.info(f"查询请求提交成功: query_session_id={query_session_id}")
+                        return query_session_id  # 这是查询的session_id
                     else:
                         error_text = await response.text()
                         logger.error(f"提交查询失败: {response.status} - {error_text}")
@@ -371,47 +376,71 @@ class Main(Star):
     async def _poll_query_result(self, query_session_id: str, event: AstrMessageEvent) -> Optional[str]:
         """轮询查询结果"""
         try:
+            logger.info(f"开始轮询查询结果: {query_session_id}")
             async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=self.query_timeout)) as session:
-                while True:
+                max_polls = 180  # 最多轮询3分钟 (180 * 2秒)
+                poll_count = 0
+                
+                while poll_count < max_polls:
+                    poll_count += 1
                     # 先检查状态
+                    logger.info(f"轮询第 {poll_count} 次，查询状态: {query_session_id}")
+                    
                     async with session.get(
                         f"{self.api_base_url}/api/v1/repos/query/status/{query_session_id}"
                     ) as response:
                         if response.status == 200:
                             status_result = await response.json()
                             status = status_result.get('status')
+                            logger.info(f"查询状态: {status}, session_id: {query_session_id}")
                             
                             if status == 'success':
                                 # 获取结果
+                                logger.info(f"查询成功，获取结果: {query_session_id}")
                                 async with session.get(
                                     f"{self.api_base_url}/api/v1/repos/query/result/{query_session_id}"
                                 ) as result_response:
                                     if result_response.status == 200:
                                         result = await result_response.json()
+                                        logger.info(f"获取结果成功: {len(str(result))} 字符")
                                         
                                         # 如果是plugin模式，需要自己生成答案
                                         if result.get('generation_mode') == 'plugin':
-                                            return await self._generate_answer_from_context(
+                                            answer = await self._generate_answer_from_context(
                                                 result.get('retrieved_context', []),
                                                 result.get('question', '')
                                             )
+                                            logger.info(f"生成答案完成: {len(answer)} 字符")
+                                            return answer
                                         else:
-                                            return result.get('answer', '未获取到答案')
+                                            answer = result.get('answer', '未获取到答案')
+                                            logger.info(f"直接返回答案: {len(answer)} 字符")
+                                            return answer
                                     else:
                                         logger.error(f"获取查询结果失败: {result_response.status}")
+                                        error_text = await result_response.text()
+                                        logger.error(f"错误详情: {error_text}")
                                         return None
                             elif status == 'failed':
                                 error_msg = status_result.get('message', '查询失败')
                                 logger.error(f"查询失败: {error_msg}")
                                 return None
                             elif status in ['queued', 'processing', 'started', 'pending']:
+                                logger.info(f"查询进行中: {status}")
                                 await asyncio.sleep(2)  # 查询轮询间隔更短
+                                continue
                             else:
                                 logger.error(f"未知查询状态: {status}")
                                 return None
                         else:
                             logger.error(f"查询状态检查失败: {response.status}")
+                            error_text = await response.text()
+                            logger.error(f"错误详情: {error_text}")
                             return None
+                
+                logger.error(f"查询超时: 已轮询 {max_polls} 次，session_id: {query_session_id}")
+                return None
+                
         except Exception as e:
             logger.error(f"轮询查询结果失败: {e}")
             return None
