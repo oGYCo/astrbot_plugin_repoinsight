@@ -72,9 +72,9 @@ class Main(Star):
     async def repo_qa_session(self, event: AstrMessageEvent):
         """启动仓库问答会话"""
         try:
-            yield event.plain_result("🚀 欢迎使用 RepoInsight！\n\n请发送您要分析的 GitHub 仓库 URL：\n\n💡 分析完成后，您可以随时发送新的仓库URL或 '/repo_qa' 命令来切换仓库")
+            yield event.plain_result("请发送您要分析的 GitHub 仓库 URL\n💡 分析完成后，您可以随时发送新的仓库URL或 '/repo_qa' 命令来切换仓库")
             
-            @session_waiter(timeout=300, record_history_chains=False)
+            @session_waiter(timeout=1800, record_history_chains=False)
             async def repo_qa_waiter(controller: SessionController, event: AstrMessageEvent):
                 user_input = event.message_str.strip()
                 
@@ -97,7 +97,7 @@ class Main(Star):
                 repo_url = user_input
                 
                 # 检查仓库是否已经分析过 - 先尝试直接查询
-                await event.send(event.plain_result(f"� 检查仓库状态: {repo_url}\n\n⏳ 请稍候..."))
+                await event.send(event.plain_result(f"仓库正在分析，⏳请稍候"))
                 
                 try:
                     # 启动仓库分析（后端会自动处理重复请求）
@@ -250,8 +250,8 @@ class Main(Star):
             if question_hash in processed_questions:
                 time_since_processed = current_time - self._question_timestamps.get(question_hash, 0)
                 if time_since_processed < 30:  # 30秒内认为是重复
-                    logger.debug(f"跳过重复问题: {user_question} (距离上次处理 {time_since_processed:.1f}秒)")
-                    await qa_event.send(qa_event.plain_result(f"⚠️ 此问题刚刚已处理过（{time_since_processed:.1f}秒前），请稍等片刻或提出新问题"))
+                    logger.debug(f"跳过重复问题: {user_question} (距离上次提问 {time_since_processed:.1f}秒)")
+                    await qa_event.send(qa_event.plain_result(f"⚠️ 此问题刚刚已提问过（{time_since_processed:.1f}秒前），请稍等片刻或提出新问题"))
                     qa_controller.keep(timeout=1800, reset_timeout=True)
                     return
                 else:
@@ -265,8 +265,10 @@ class Main(Star):
                 qa_controller.keep(timeout=1800, reset_timeout=True)
                 return
             
-            # 标记问题为正在处理
+            # 标记问题为正在处理，并记录开始处理时间
             processing_questions.add(question_hash)
+            processed_questions.add(question_hash)  # 立即标记为已处理以防重复
+            self._question_timestamps[question_hash] = current_time  # 记录提问时间
             logger.info(f"开始处理问题: {user_question[:50]}... (hash: {question_hash}) - 仓库: {session_id}")
                  
             try:
@@ -282,10 +284,6 @@ class Main(Star):
                 if answer:
                     # 智能分段发送长回答
                     await self._send_long_message(qa_event, f"💡 **回答:**\n\n{answer}\n\n继续提问、发送 '/repo_qa' 切换仓库或发送 '退出' 结束会话")
-                    
-                    # 标记问题为已处理（成功）并记录当前完成时间
-                    processed_questions.add(question_hash)
-                    self._question_timestamps[question_hash] = time.time()  # 使用完成时的时间戳
                 else:
                     await qa_event.send(qa_event.plain_result("❌ 获取答案失败，请重试\n\n继续提问、发送 '/repo_qa' 切换仓库或发送 '退出' 结束会话"))
                 
@@ -452,57 +450,61 @@ class Main(Star):
             logger.error(f"轮询查询结果失败: {e}")
             return None
     
-    async def _send_long_message(self, event: AstrMessageEvent, message: str, max_length: int = 1500):
-        """智能分段发送长消息，在单词边界处分割"""
+    async def _send_long_message(self, event: AstrMessageEvent, message: str, max_length: int = 1800):
+        """智能分段发送长消息，确保完整性"""
         if len(message) <= max_length:
             await event.send(event.plain_result(message))
             return
         
-        # 分段发送
+        # 找到合适的分割点，优先在段落边界分割
         parts = []
-        current_part = ""
+        remaining_text = message
         
-        # 按行分割，保持格式
-        lines = message.split('\n')
-        
-        for line in lines:
-            # 如果添加当前行会超出长度限制
-            if len(current_part) + len(line) + 1 > max_length:
-                if current_part:
-                    parts.append(current_part.strip())
-                    current_part = line
-                else:
-                    # 单行过长，强制分割
-                    while len(line) > max_length:
-                        # 尝试在单词边界分割
-                        split_pos = max_length
-                        for i in range(max_length - 1, max_length // 2, -1):
-                            if line[i] in ' \t.,;!?':
-                                split_pos = i
-                                break
-                        
-                        parts.append(line[:split_pos].strip())
-                        line = line[split_pos:].strip()
-                    
-                    current_part = line
+        while len(remaining_text) > max_length:
+            # 寻找最佳分割点
+            split_pos = max_length
+            
+            # 优先在段落边界（双换行）分割
+            best_split = remaining_text.rfind('\n\n', 0, max_length)
+            if best_split > max_length // 2:  # 确保分割点不会太靠前
+                split_pos = best_split + 2
             else:
-                if current_part:
-                    current_part += '\n' + line
+                # 其次在句子边界分割
+                for delimiter in ['\n', '。', '！', '？', '.', '!', '?']:
+                    delimiter_pos = remaining_text.rfind(delimiter, max_length // 2, max_length)
+                    if delimiter_pos > 0:
+                        split_pos = delimiter_pos + 1
+                        break
                 else:
-                    current_part = line
+                    # 最后在单词边界分割
+                    for char in [' ', '\t', '，', ',', '；', ';']:
+                        char_pos = remaining_text.rfind(char, max_length // 2, max_length)
+                        if char_pos > 0:
+                            split_pos = char_pos + 1
+                            break
+            
+            # 提取当前部分
+            current_part = remaining_text[:split_pos].strip()
+            parts.append(current_part)
+            remaining_text = remaining_text[split_pos:].strip()
         
-        # 添加最后一部分
-        if current_part:
-            parts.append(current_part.strip())
+        # 添加剩余部分
+        if remaining_text:
+            parts.append(remaining_text)
         
-        # 发送所有部分
+        # 发送所有部分，确保标记清晰
         for i, part in enumerate(parts):
-            if i > 0:
-                part = f"(续 {i+1}/{len(parts)})\n\n" + part
-            elif len(parts) > 1:
-                part = f"(1/{len(parts)})\n\n" + part
+            if len(parts) > 1:
+                if i == 0:
+                    part = f"📄 (第1部分，共{len(parts)}部分)\n\n" + part
+                else:
+                    part = f"📄 (第{i+1}部分，共{len(parts)}部分)\n\n" + part
             
             await event.send(event.plain_result(part))
+            
+            # 在多段消息之间稍作延迟，避免消息顺序混乱
+            if i < len(parts) - 1:
+                await asyncio.sleep(0.2)
     
     async def _generate_answer_from_context(self, context_list: list, question: str) -> str:
         """基于检索到的上下文生成答案"""
