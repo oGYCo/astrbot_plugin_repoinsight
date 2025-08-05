@@ -23,6 +23,9 @@ class Main(Star):
     def __init__(self, context: Context, config: AstrBotConfig = None):
         super().__init__(context)
         
+        # 设置调试日志级别
+        logger.setLevel("DEBUG")
+        
         # 初始化配置
         self.plugin_config = config or {}
         self.astrbot_config = config
@@ -73,6 +76,10 @@ class Main(Star):
     async def repo_qa_session(self, event: AstrMessageEvent):
         """启动仓库问答会话"""
         try:
+            logger.info("=== 收到 /repo_qa 命令，启动仓库问答会话 ===")
+            logger.debug(f"用户: {event.unified_msg_origin}")
+            logger.debug(f"消息内容: {event.message_str}")
+            
             yield event.plain_result("请发送您要分析的 GitHub 仓库 URL\n💡 分析完成后，您可以随时发送新的仓库URL或 '/repo_qa' 命令来切换仓库")
             
             @session_waiter(timeout=3600, record_history_chains=False)  # 设置1小时超时
