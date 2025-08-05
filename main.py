@@ -280,10 +280,12 @@ class Main(Star):
                 # 轮询查询结果
                 answer = await self._poll_query_result(query_session_id, qa_event)
                 if answer:
-                    # 标记问题为已处理（成功）并记录时间戳
+                    # 智能分段发送长回答
+                    await self._send_long_message(qa_event, f"💡 **回答:**\n\n{answer}\n\n继续提问、发送 '/repo_qa' 切换仓库或发送 '退出' 结束会话")
+                    
+                    # 标记问题为已处理（成功）并记录当前完成时间
                     processed_questions.add(question_hash)
-                    self._question_timestamps[question_hash] = current_time
-                    await qa_event.send(qa_event.plain_result(f"💡 **回答:**\n\n{answer}\n\n继续提问、发送 '/repo_qa' 切换仓库或发送 '退出' 结束会话"))
+                    self._question_timestamps[question_hash] = time.time()  # 使用完成时的时间戳
                 else:
                     await qa_event.send(qa_event.plain_result("❌ 获取答案失败，请重试\n\n继续提问、发送 '/repo_qa' 切换仓库或发送 '退出' 结束会话"))
                 
@@ -449,6 +451,58 @@ class Main(Star):
         except Exception as e:
             logger.error(f"轮询查询结果失败: {e}")
             return None
+    
+    async def _send_long_message(self, event: AstrMessageEvent, message: str, max_length: int = 1500):
+        """智能分段发送长消息，在单词边界处分割"""
+        if len(message) <= max_length:
+            await event.send(event.plain_result(message))
+            return
+        
+        # 分段发送
+        parts = []
+        current_part = ""
+        
+        # 按行分割，保持格式
+        lines = message.split('\n')
+        
+        for line in lines:
+            # 如果添加当前行会超出长度限制
+            if len(current_part) + len(line) + 1 > max_length:
+                if current_part:
+                    parts.append(current_part.strip())
+                    current_part = line
+                else:
+                    # 单行过长，强制分割
+                    while len(line) > max_length:
+                        # 尝试在单词边界分割
+                        split_pos = max_length
+                        for i in range(max_length - 1, max_length // 2, -1):
+                            if line[i] in ' \t.,;!?':
+                                split_pos = i
+                                break
+                        
+                        parts.append(line[:split_pos].strip())
+                        line = line[split_pos:].strip()
+                    
+                    current_part = line
+            else:
+                if current_part:
+                    current_part += '\n' + line
+                else:
+                    current_part = line
+        
+        # 添加最后一部分
+        if current_part:
+            parts.append(current_part.strip())
+        
+        # 发送所有部分
+        for i, part in enumerate(parts):
+            if i > 0:
+                part = f"(续 {i+1}/{len(parts)})\n\n" + part
+            elif len(parts) > 1:
+                part = f"(1/{len(parts)})\n\n" + part
+            
+            await event.send(event.plain_result(part))
     
     async def _generate_answer_from_context(self, context_list: list, question: str) -> str:
         """基于检索到的上下文生成答案"""
