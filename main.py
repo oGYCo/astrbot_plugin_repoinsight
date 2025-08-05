@@ -23,12 +23,13 @@ class Main(Star):
     def __init__(self, context: Context, config: AstrBotConfig = None):
         super().__init__(context)
         
-        # 设置调试日志级别
-        logger.setLevel("DEBUG")
-        
         # 初始化配置
         self.plugin_config = config or {}
         self.astrbot_config = config
+        
+        # 输出调试信息
+        logger.info("=== RepoInsight插件开始初始化 ===")
+        logger.info(f"配置信息: {self.plugin_config}")
         
         # 获取配置参数
         self.api_base_url = self.plugin_config.get("api_base_url", "http://api:8000") if self.plugin_config else "http://api:8000"
@@ -82,21 +83,25 @@ class Main(Star):
             
             yield event.plain_result("请发送您要分析的 GitHub 仓库 URL\n💡 分析完成后，您可以随时发送新的仓库URL或 '/repo_qa' 命令来切换仓库")
             
-            @session_waiter(timeout=3600, record_history_chains=False)  # 设置1小时超时
+            @session_waiter(timeout=7200, record_history_chains=False)  # 设置2小时超时
             async def repo_qa_waiter(controller: SessionController, event: AstrMessageEvent):
+                logger.info(f"=== session_waiter被调用，用户输入: {event.message_str} ===")
                 # 重要：禁止AstrBot默认的LLM调用，避免冲突
                 event.should_call_llm(False)
                 
                 user_input = event.message_str.strip()
+                logger.info(f"处理用户输入: {user_input}")
                 
                 # 检查是否要退出
                 if user_input.lower() in ['退出', 'exit', 'quit', '取消']:
+                    logger.info("用户选择退出会话")
                     await event.send(event.plain_result("👋 已退出 RepoInsight 会话"))
                     controller.stop()
                     return
                 
                 # 验证GitHub URL
                 if not self._is_valid_github_url(user_input):
+                    logger.warning(f"无效的GitHub URL: {user_input}")
                     await event.send(event.plain_result(
                         "❌ 请输入有效的 GitHub 仓库 URL\n\n"
                         "示例: https://github.com/user/repo\n\n"
@@ -106,14 +111,19 @@ class Main(Star):
                     return
                 
                 repo_url = user_input
+                logger.info(f"开始处理仓库URL: {repo_url}")
                 
                 # 检查仓库是否已经分析过 - 先尝试直接查询
                 await event.send(event.plain_result(f"仓库正在分析，⏳请稍候"))
                 
                 try:
                     # 启动仓库分析（后端会自动处理重复请求）
+                    logger.info(f"启动仓库分析: {repo_url}")
                     analysis_session_id = await self._start_repository_analysis(repo_url)
+                    logger.info(f"分析会话ID: {analysis_session_id}")
+                    
                     if not analysis_session_id:
+                        logger.error("启动仓库分析失败")
                         await event.send(event.plain_result("❌ 启动仓库分析失败，请稍后重试"))
                         controller.stop()
                         return
@@ -168,8 +178,9 @@ class Main(Star):
         qa_state = QAState()
         
         # 创建持续的问答循环
-        @session_waiter(timeout=3600, record_history_chains=False)
+        @session_waiter(timeout=7200, record_history_chains=False)  # 设置2小时超时
         async def qa_loop_waiter(qa_controller: SessionController, qa_event: AstrMessageEvent):
+            logger.info(f"=== QA循环waiter被调用，用户输入: {qa_event.message_str} ===")
             # 重要：禁止AstrBot默认的LLM调用，避免冲突
             qa_event.should_call_llm(False)
             
@@ -296,26 +307,39 @@ class Main(Star):
     async def _start_repository_analysis(self, repo_url: str) -> Optional[str]:
         """启动仓库分析"""
         try:
+            logger.info(f"=== 开始启动仓库分析 ===")
+            logger.info(f"仓库URL: {repo_url}")
+            logger.info(f"API地址: {self.api_base_url}")
+            logger.info(f"超时设置: {self.timeout}秒")
+            
             async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=self.timeout)) as session:
                 payload = {
                     "repo_url": repo_url,
                     "embedding_config": self.embedding_config
                 }
                 
+                logger.info(f"请求载荷: {payload}")
+                
                 async with session.post(
                     f"{self.api_base_url}/api/v1/repos/analyze",
                     json=payload,
                     headers={"Content-Type": "application/json"}
                 ) as response:
+                    logger.info(f"HTTP响应状态: {response.status}")
+                    
                     if response.status == 200:
                         result = await response.json()
-                        return result.get('session_id')
+                        session_id = result.get('session_id')
+                        logger.info(f"分析启动成功，会话ID: {session_id}")
+                        logger.info(f"完整响应: {result}")
+                        return session_id
                     else:
                         error_text = await response.text()
                         logger.error(f"启动分析失败: {response.status} - {error_text}")
                         return None
         except Exception as e:
             logger.error(f"启动仓库分析请求失败: {e}")
+            logger.error(f"异常详情: {str(e)}")
             return None
     
     async def _poll_analysis_status(self, session_id: str, event: AstrMessageEvent) -> Optional[Dict[str, Any]]:
@@ -579,6 +603,16 @@ class Main(Star):
         except Exception as e:
             logger.error(f"生成答案失败: {e}")
             return f"生成答案时出错: {str(e)}"
+    
+    @filter.command("repo_test")
+    async def test_plugin(self, event: AstrMessageEvent):
+        """测试插件是否正常工作"""
+        try:
+            logger.info("=== 测试命令被调用 ===")
+            yield event.plain_result(f"✅ RepoInsight插件工作正常！\n\n配置信息:\n• API地址: {self.api_base_url}\n• 超时设置: {self.timeout}秒")
+        except Exception as e:
+            logger.error(f"测试命令失败: {e}")
+            yield event.plain_result(f"❌ 测试失败: {str(e)}")
     
     @filter.command("repo_status")
     async def check_repo_status(self, event: AstrMessageEvent):
