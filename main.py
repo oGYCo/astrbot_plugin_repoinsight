@@ -77,6 +77,9 @@ class Main(Star):
             
             @session_waiter(timeout=3600, record_history_chains=False)  # 设置1小时超时
             async def repo_qa_waiter(controller: SessionController, event: AstrMessageEvent):
+                # 重要：禁止AstrBot默认的LLM调用，避免冲突
+                event.should_call_llm(False)
+                
                 user_input = event.message_str.strip()
                 
                 # 检查是否要退出
@@ -160,6 +163,9 @@ class Main(Star):
         # 创建持续的问答循环
         @session_waiter(timeout=3600, record_history_chains=False)
         async def qa_loop_waiter(qa_controller: SessionController, qa_event: AstrMessageEvent):
+            # 重要：禁止AstrBot默认的LLM调用，避免冲突
+            qa_event.should_call_llm(False)
+            
             user_question = qa_event.message_str.strip()
             
             # 检查是否为空消息
