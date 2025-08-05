@@ -74,7 +74,7 @@ class Main(Star):
         try:
             yield event.plain_result("请发送您要分析的 GitHub 仓库 URL\n💡 分析完成后，您可以随时发送新的仓库URL或 '/repo_qa' 命令来切换仓库")
             
-            @session_waiter(timeout=1800, record_history_chains=False)
+            @session_waiter(record_history_chains=False)
             async def repo_qa_waiter(controller: SessionController, event: AstrMessageEvent):
                 user_input = event.message_str.strip()
                 
@@ -91,7 +91,7 @@ class Main(Star):
                         "示例: https://github.com/user/repo\n\n"
                         "或发送 '退出' 结束会话"
                     ))
-                    controller.keep(timeout=300, reset_timeout=True)
+                    controller.keep(reset_timeout=True)
                     return
                 
                 repo_url = user_input
@@ -119,12 +119,7 @@ class Main(Star):
                     
                     # 分析完成，进入问答模式
                     await event.send(event.plain_result(
-                        f"✅ 仓库分析完成！\n\n"
-                        f"📊 **分析结果:**\n"
-                        f"• 仓库: {analysis_result.get('repository_name', 'Unknown')}\n"
-                        f"• 文件数: {analysis_result.get('total_files', 0)}\n"
-                        f"• 代码块数: {analysis_result.get('total_chunks', 0)}\n\n"
-                        f"💬 现在您可以开始提问了！\n\n"
+                        f"✅ 仓库分析完成！现在您可以开始提问了！\n"
                         f"💡 **提示:**\n"
                         f"• 发送问题进行仓库问答\n"
                         f"• 发送 '/repo_qa' 切换到新仓库\n"
@@ -141,8 +136,6 @@ class Main(Star):
             
             try:
                 await repo_qa_waiter(event)
-            except TimeoutError:
-                yield event.plain_result("⏰ 会话已超时（5分钟无活动）\n\n💡 您可以随时发送 '/repo_qa' 重新开始")
             except Exception as e:
                 logger.error(f"会话处理出错: {e}")
                 yield event.plain_result(f"❌ 会话处理出错: {str(e)}")
@@ -155,20 +148,18 @@ class Main(Star):
     
     async def _enter_qa_loop(self, controller: SessionController, event: AstrMessageEvent, session_id: str):
         """进入问答循环"""
-        # 用于跟踪已处理的问题，避免重复处理
-        processed_questions = set()
         # 用于跟踪正在处理的问题，防止并发处理同一问题
         processing_questions = set()
         
-        # 创建嵌套的session_waiter来处理问答循环 - 设置更长的超时时间（30分钟）
-        @session_waiter(timeout=1800, record_history_chains=False)
+        # 创建嵌套的session_waiter来处理问答循环 - 无超时限制
+        @session_waiter(record_history_chains=False)
         async def qa_loop_waiter(qa_controller: SessionController, qa_event: AstrMessageEvent):
             user_question = qa_event.message_str.strip()
             
             # 检查是否为空消息
             if not user_question:
                 await qa_event.send(qa_event.plain_result("请输入您的问题，或发送 '退出' 结束会话，或发送 '/repo_qa' 切换仓库"))
-                qa_controller.keep(timeout=1800, reset_timeout=True)
+                qa_controller.keep(reset_timeout=True)
                 return
             
             # 检查是否为退出命令
@@ -198,7 +189,7 @@ class Main(Star):
                     analysis_session_id = await self._start_repository_analysis(user_question)
                     if not analysis_session_id:
                         await qa_event.send(qa_event.plain_result("❌ 启动新仓库分析失败，继续使用当前仓库"))
-                        qa_controller.keep(timeout=1800, reset_timeout=True)
+                        qa_controller.keep(reset_timeout=True)
                         return
                     
                     await self.state_manager.add_task(analysis_session_id, user_question, qa_event.unified_msg_origin)
@@ -207,16 +198,11 @@ class Main(Star):
                     if not analysis_result:
                         await self.state_manager.remove_task(analysis_session_id)
                         await qa_event.send(qa_event.plain_result("❌ 新仓库分析失败，继续使用当前仓库"))
-                        qa_controller.keep(timeout=1800, reset_timeout=True)
+                        qa_controller.keep(reset_timeout=True)
                         return
                     
                     await qa_event.send(qa_event.plain_result(
-                        f"✅ 新仓库分析完成！已切换到新仓库\n\n"
-                        f"📊 **分析结果:**\n"
-                        f"• 仓库: {analysis_result.get('repository_name', 'Unknown')}\n"
-                        f"• 文件数: {analysis_result.get('total_files', 0)}\n"
-                        f"• 代码块数: {analysis_result.get('total_chunks', 0)}\n\n"
-                        f"💬 请提出您的问题！"
+                        f"✅ 新仓库分析完成！已切换到新仓库\n"
                     ))
                     
                     # 更新session_id为新仓库URL，重启问答循环
@@ -227,56 +213,28 @@ class Main(Star):
                 except Exception as e:
                     logger.error(f"切换仓库时出错: {e}")
                     await qa_event.send(qa_event.plain_result(f"❌ 切换仓库失败: {str(e)}\n\n继续使用当前仓库"))
-                    qa_controller.keep(timeout=1800, reset_timeout=True)
+                    qa_controller.keep(reset_timeout=True)
                     return
             
-            # 检查是否为重复问题或正在处理的问题
+            # 检查是否正在处理相同问题（防止并发处理）
             question_hash = hash(user_question)
-            
-            # 获取当前时间用于时间戳管理
-            current_time = time.time()
-            
-            # 初始化时间戳字典（如果不存在）
-            if not hasattr(self, '_question_timestamps'):
-                self._question_timestamps = {}
-            
-            # 清理过期的问题记录（超过30秒的）
-            expired_hashes = [h for h, timestamp in self._question_timestamps.items() 
-                            if current_time - timestamp > 30]
-            for h in expired_hashes:
-                processed_questions.discard(h)
-                self._question_timestamps.pop(h, None)
-            
-            if question_hash in processed_questions:
-                time_since_processed = current_time - self._question_timestamps.get(question_hash, 0)
-                if time_since_processed < 30:  # 30秒内认为是重复
-                    logger.debug(f"跳过重复问题: {user_question} (距离上次提问 {time_since_processed:.1f}秒)")
-                    await qa_event.send(qa_event.plain_result(f"⚠️ 此问题刚刚已提问过（{time_since_processed:.1f}秒前），请稍等片刻或提出新问题"))
-                    qa_controller.keep(timeout=1800, reset_timeout=True)
-                    return
-                else:
-                    # 超过30秒，允许重新处理
-                    processed_questions.discard(question_hash)
-                    self._question_timestamps.pop(question_hash, None)
             
             if question_hash in processing_questions:
                 logger.debug(f"问题正在处理中: {user_question}")
                 await qa_event.send(qa_event.plain_result("此问题正在处理中，请稍候..."))
-                qa_controller.keep(timeout=1800, reset_timeout=True)
+                qa_controller.keep(reset_timeout=True)
                 return
             
-            # 标记问题为正在处理，并记录开始处理时间
+            # 标记问题为正在处理
             processing_questions.add(question_hash)
-            processed_questions.add(question_hash)  # 立即标记为已处理以防重复
-            self._question_timestamps[question_hash] = current_time  # 记录提问时间
-            logger.info(f"开始处理问题: {user_question[:50]}... (hash: {question_hash}) - 仓库: {session_id}")
+            logger.info(f"开始处理问题: {user_question[:50]}... - 仓库: {session_id}")
                  
             try:
                 # 提交查询请求，使用session_id（可能是URL或分析会话ID）
                 query_session_id = await self._submit_query(session_id, user_question)
                 if not query_session_id:
                     await qa_event.send(qa_event.plain_result("❌ 提交问题失败，请重试\n\n继续提问、发送 '/repo_qa' 切换仓库或发送 '退出' 结束会话"))
-                    qa_controller.keep(timeout=1800, reset_timeout=True)
+                    qa_controller.keep(reset_timeout=True)
                     return
                 
                 # 轮询查询结果
@@ -288,13 +246,13 @@ class Main(Star):
                     await qa_event.send(qa_event.plain_result("❌ 获取答案失败，请重试\n\n继续提问、发送 '/repo_qa' 切换仓库或发送 '退出' 结束会话"))
                 
                 # 继续等待下一个问题
-                qa_controller.keep(timeout=1800, reset_timeout=True)
+                qa_controller.keep(reset_timeout=True)
                 return  # 重要：必须return，否则函数会结束导致session结束
                 
             except Exception as e:
                 logger.error(f"处理问题时出错: {e}")
                 await qa_event.send(qa_event.plain_result(f"❌ 处理问题时出错: {str(e)}\n\n继续提问、发送 '/repo_qa' 切换仓库或发送 '退出' 结束会话"))
-                qa_controller.keep(timeout=1800, reset_timeout=True)
+                qa_controller.keep(reset_timeout=True)
                 return  # 重要：必须return，否则函数会结束导致session结束
             finally:
                 # 无论成功还是失败，都要移除正在处理标记
@@ -303,11 +261,6 @@ class Main(Star):
         # 启动问答循环
         try:
             await qa_loop_waiter(event)
-        except TimeoutError:
-            await event.send(event.plain_result("⏰ 会话已超时（30分钟无活动）\n\n💡 您可以随时发送 '/repo_qa' 重新开始会话"))
-            # 如果session_id不是URL格式，才从任务管理器中移除
-            if not session_id.startswith('http'):
-                await self.state_manager.remove_task(session_id)
         except Exception as e:
             logger.error(f"问答循环出错: {e}")
             await event.send(event.plain_result(f"❌ 问答循环出错: {str(e)}"))
