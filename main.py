@@ -155,6 +155,9 @@ class Main(Star):
         # 创建持续的问答循环
         @session_waiter(timeout=3600, record_history_chains=False)
         async def qa_loop_waiter(qa_controller: SessionController, qa_event: AstrMessageEvent):
+            # 使用局部变量来跟踪当前的session_id，避免作用域问题
+            current_session_id = session_id
+            
             # 持续循环等待用户消息
             while True:
                 user_question = qa_event.message_str.strip()
@@ -170,11 +173,11 @@ class Main(Star):
                 # 检查是否为退出命令
                 if user_question.lower() in ['退出', 'exit', 'quit', '取消']:
                     await qa_event.send(qa_event.plain_result("👋 感谢使用 RepoInsight！"))
-                    # 如果session_id是URL格式，则不需要从任务管理器中移除
-                    if session_id.startswith('http'):
-                        logger.info(f"结束仓库问答会话: {session_id}")
+                    # 如果current_session_id是URL格式，则不需要从任务管理器中移除
+                    if current_session_id.startswith('http'):
+                        logger.info(f"结束仓库问答会话: {current_session_id}")
                     else:
-                        await self.state_manager.remove_task(session_id)
+                        await self.state_manager.remove_task(current_session_id)
                     qa_controller.stop()
                     controller.stop()  # 同时停止外层控制器
                     return
@@ -187,7 +190,7 @@ class Main(Star):
                     return
                 
                 # 检查是否直接输入了新的GitHub URL（快速切换仓库）
-                if self._is_valid_github_url(user_question) and user_question != session_id:
+                if self._is_valid_github_url(user_question) and user_question != current_session_id:
                     await qa_event.send(qa_event.plain_result(f"🔄 检测到新仓库URL，正在切换分析...\n\n🔗 新仓库: {user_question}"))
                     # 直接开始新仓库的分析流程
                     try:
@@ -212,8 +215,8 @@ class Main(Star):
                             f"✅ 新仓库分析完成！已切换到新仓库\n"
                         ))
                         
-                        # 更新session_id为新仓库URL，重启问答循环
-                        session_id = user_question
+                        # 更新current_session_id为新仓库URL，重启问答循环
+                        current_session_id = user_question
                         qa_controller.keep(reset_timeout=True)
                         qa_event = await qa_controller.wait()
                         continue
@@ -236,11 +239,11 @@ class Main(Star):
                 
                 # 标记问题为正在处理
                 processing_questions.add(question_hash)
-                logger.info(f"开始处理问题: {user_question[:50]}... - 仓库: {session_id}")
+                logger.info(f"开始处理问题: {user_question[:50]}... - 仓库: {current_session_id}")
                      
                 try:
-                    # 提交查询请求，使用session_id（可能是URL或分析会话ID）
-                    query_session_id = await self._submit_query(session_id, user_question)
+                    # 提交查询请求，使用current_session_id（可能是URL或分析会话ID）
+                    query_session_id = await self._submit_query(current_session_id, user_question)
                     if not query_session_id:
                         await qa_event.send(qa_event.plain_result("❌ 提交问题失败，请重试"))
                         processing_questions.discard(question_hash)  # 清理处理标记
