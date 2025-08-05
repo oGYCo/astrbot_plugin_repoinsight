@@ -30,6 +30,7 @@ class Main(Star):
         # 获取配置参数
         self.api_base_url = self.plugin_config.get("api_base_url", "http://api:8000") if self.plugin_config else "http://api:8000"
         self.timeout = self.plugin_config.get("timeout", 30) if self.plugin_config else 30
+        self.query_timeout = self.plugin_config.get("query_timeout", 600) if self.plugin_config else 600  # 查询超时设为10分钟
         self.poll_interval = self.plugin_config.get("poll_interval", 5) if self.plugin_config else 5
         
         # Embedding配置 - 使用平级配置格式
@@ -233,7 +234,7 @@ class Main(Star):
                 # 提交查询请求，使用session_id（可能是URL或分析会话ID）
                 query_session_id = await self._submit_query(session_id, user_question)
                 if not query_session_id:
-                    await qa_event.send(qa_event.plain_result("❌ 提交问题失败，请重试\n\n继续提问、发送 '/repo_qa' 切换仓库或发送 '退出' 结束会话"))
+                    await qa_event.send(qa_event.plain_result("❌ 提交问题失败，请重试"))
                     qa_controller.keep(reset_timeout=True)
                     return
                 
@@ -241,9 +242,9 @@ class Main(Star):
                 answer = await self._poll_query_result(query_session_id, qa_event)
                 if answer:
                     # 智能分段发送长回答
-                    await self._send_long_message(qa_event, f"💡 **回答:**\n\n{answer}\n\n继续提问、发送 '/repo_qa' 切换仓库或发送 '退出' 结束会话")
+                    await self._send_long_message(qa_event, f"💡 **回答:**\n\n{answer}")
                 else:
-                    await qa_event.send(qa_event.plain_result("❌ 获取答案失败，请重试\n\n继续提问、发送 '/repo_qa' 切换仓库或发送 '退出' 结束会话"))
+                    await qa_event.send(qa_event.plain_result("❌ 获取答案失败，请重试"))
                 
                 # 继续等待下一个问题
                 qa_controller.keep(reset_timeout=True)
@@ -251,7 +252,7 @@ class Main(Star):
                 
             except Exception as e:
                 logger.error(f"处理问题时出错: {e}")
-                await qa_event.send(qa_event.plain_result(f"❌ 处理问题时出错: {str(e)}\n\n继续提问、发送 '/repo_qa' 切换仓库或发送 '退出' 结束会话"))
+                await qa_event.send(qa_event.plain_result(f"❌ 处理问题时出错: {str(e)}"))
                 qa_controller.keep(reset_timeout=True)
                 return  # 重要：必须return，否则函数会结束导致session结束
             finally:
@@ -301,7 +302,7 @@ class Main(Star):
     async def _poll_analysis_status(self, session_id: str, event: AstrMessageEvent) -> Optional[Dict[str, Any]]:
         """轮询分析状态"""
         try:
-            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=self.timeout)) as session:
+            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=self.query_timeout)) as session:
                 while True:
                     async with session.get(
                         f"{self.api_base_url}/api/v1/repos/status/{session_id}"
@@ -331,7 +332,7 @@ class Main(Star):
     async def _submit_query(self, session_id: str, question: str) -> Optional[str]:
         """提交查询请求"""
         try:
-            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=self.timeout)) as session:
+            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=self.query_timeout)) as session:
                 payload = {
                     "session_id": session_id,
                     "question": question,
@@ -358,7 +359,7 @@ class Main(Star):
     async def _poll_query_result(self, query_session_id: str, event: AstrMessageEvent) -> Optional[str]:
         """轮询查询结果"""
         try:
-            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=self.timeout)) as session:
+            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=self.query_timeout)) as session:
                 while True:
                     # 先检查状态
                     async with session.get(
@@ -404,60 +405,89 @@ class Main(Star):
             return None
     
     async def _send_long_message(self, event: AstrMessageEvent, message: str, max_length: int = 1800):
-        """智能分段发送长消息，确保完整性"""
+        """智能分段发送长消息，确保完整性和内容不丢失"""
         if len(message) <= max_length:
             await event.send(event.plain_result(message))
             return
         
-        # 找到合适的分割点，优先在段落边界分割
+        # 安全分段算法 - 确保不丢失任何内容
         parts = []
         remaining_text = message
         
         while len(remaining_text) > max_length:
-            # 寻找最佳分割点
-            split_pos = max_length
+            # 在最大长度范围内寻找最佳分割点
+            search_end = max_length
+            best_split_pos = None
             
-            # 优先在段落边界（双换行）分割
-            best_split = remaining_text.rfind('\n\n', 0, max_length)
-            if best_split > max_length // 2:  # 确保分割点不会太靠前
-                split_pos = best_split + 2
-            else:
-                # 其次在句子边界分割
-                for delimiter in ['\n', '。', '！', '？', '.', '!', '?']:
-                    delimiter_pos = remaining_text.rfind(delimiter, max_length // 2, max_length)
+            # 优先级1: 段落边界（双换行符）
+            double_newline_pos = remaining_text.rfind('\n\n', 0, search_end)
+            if double_newline_pos > max_length // 3:  # 确保分割点不会太靠前
+                best_split_pos = double_newline_pos + 2
+            
+            # 优先级2: 单换行符
+            if best_split_pos is None:
+                single_newline_pos = remaining_text.rfind('\n', max_length // 2, search_end)
+                if single_newline_pos > 0:
+                    best_split_pos = single_newline_pos + 1
+            
+            # 优先级3: 句号等句子结束符
+            if best_split_pos is None:
+                for delimiter in ['。', '！', '？', '.', '!', '?']:
+                    delimiter_pos = remaining_text.rfind(delimiter, max_length // 2, search_end)
                     if delimiter_pos > 0:
-                        split_pos = delimiter_pos + 1
+                        best_split_pos = delimiter_pos + 1
                         break
-                else:
-                    # 最后在单词边界分割
-                    for char in [' ', '\t', '，', ',', '；', ';']:
-                        char_pos = remaining_text.rfind(char, max_length // 2, max_length)
-                        if char_pos > 0:
-                            split_pos = char_pos + 1
-                            break
+            
+            # 优先级4: 逗号等标点符号
+            if best_split_pos is None:
+                for delimiter in ['，', ',', '；', ';', '：', ':']:
+                    delimiter_pos = remaining_text.rfind(delimiter, max_length // 2, search_end)
+                    if delimiter_pos > 0:
+                        best_split_pos = delimiter_pos + 1
+                        break
+            
+            # 优先级5: 空格
+            if best_split_pos is None:
+                space_pos = remaining_text.rfind(' ', max_length // 2, search_end)
+                if space_pos > 0:
+                    best_split_pos = space_pos + 1
+            
+            # 如果找不到合适的分割点，就在最大长度处强制分割
+            if best_split_pos is None:
+                best_split_pos = max_length
             
             # 提取当前部分
-            current_part = remaining_text[:split_pos].strip()
-            parts.append(current_part)
-            remaining_text = remaining_text[split_pos:].strip()
+            current_part = remaining_text[:best_split_pos].strip()
+            if current_part:  # 只添加非空内容
+                parts.append(current_part)
+            
+            # 更新剩余文本
+            remaining_text = remaining_text[best_split_pos:].strip()
         
-        # 添加剩余部分
-        if remaining_text:
-            parts.append(remaining_text)
+        # 添加剩余的所有内容
+        if remaining_text.strip():
+            parts.append(remaining_text.strip())
         
-        # 发送所有部分，确保标记清晰
+        # 发送所有部分
         for i, part in enumerate(parts):
             if len(parts) > 1:
-                if i == 0:
-                    part = f"📄 (第1部分，共{len(parts)}部分)\n\n" + part
-                else:
-                    part = f"📄 (第{i+1}部分，共{len(parts)}部分)\n\n" + part
+                # 添加分页标记
+                part_header = f"📄 (第{i+1}部分，共{len(parts)}部分)\n\n"
+                final_part = part_header + part
+            else:
+                final_part = part
             
-            await event.send(event.plain_result(part))
+            await event.send(event.plain_result(final_part))
             
             # 在多段消息之间稍作延迟，避免消息顺序混乱
             if i < len(parts) - 1:
-                await asyncio.sleep(0.2)
+                await asyncio.sleep(0.3)
+        
+        # 验证内容完整性（仅在调试模式下）
+        total_original_length = len(message.replace(' ', '').replace('\n', ''))
+        total_parts_length = len(''.join(parts).replace(' ', '').replace('\n', ''))
+        if total_original_length != total_parts_length:
+            logger.warning(f"分段可能丢失内容: 原始长度={total_original_length}, 分段后长度={total_parts_length}")
     
     async def _generate_answer_from_context(self, context_list: list, question: str) -> str:
         """基于检索到的上下文生成答案"""
@@ -530,7 +560,8 @@ class Main(Star):
 
 **API 配置:**
 • 服务地址: {self.api_base_url}
-• 超时时间: {self.timeout}秒
+ • 分析超时: {self.timeout}秒
+• 查询超时: {self.query_timeout}秒
 • 轮询间隔: {self.poll_interval}秒
 
 **Embedding 配置:**
