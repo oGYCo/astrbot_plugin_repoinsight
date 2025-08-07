@@ -31,6 +31,15 @@ RepoInsight 是一个为 AstrBot 开发的插件，它能够分析 GitHub 仓库
 ## 配置说明
 
 插件支持通过 AstrBot 的配置界面进行可视化配置，主要配置项包括：
+### 网络配置(重要)
+当用到了GithubBot时，需要将GithubBot中的docker-compose.yml最后的external改成true
+```yml
+networks:
+  github_bot_network:
+    driver: bridge
+    external: false
+    name: github_bot_network
+```
 
 ### API 配置
 
