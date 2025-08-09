@@ -438,11 +438,19 @@ class Main(Star):
     
     async def _send_long_message(self, event: AstrMessageEvent, message: str, max_length: int = 1500):
         """智能分段发送长消息，确保完整性和内容不丢失"""
+        
+        # 记录接收到的原始消息
+        logger.info(f"接收到的消息长度: {len(message)} 字符")
+        logger.info(f"最大分段长度: {max_length} 字符")
+        logger.info(f"消息内容: {message}")
+        
         if len(message) <= max_length:
+            logger.info(f"消息无需分割，直接发送")
             await event.send(event.plain_result(message))
+            logger.info(f"=== 消息发送完成 ===")
             return
         
-        logger.info(f"开始分割长消息: 总长度={len(message)}, 最大分段长度={max_length}")
+        logger.info(f"消息需要分割处理，开始分割算法...")
         
         # 安全分段算法 - 确保不丢失任何内容
         parts = []
@@ -451,24 +459,27 @@ class Main(Star):
         
         while len(remaining_text) > max_length:
             part_num += 1
-            logger.debug(f"第{part_num}次分割: 剩余长度={len(remaining_text)}")
+            logger.info(f"--- 第{part_num}次分割 ---")
+            logger.info(f"剩余文本长度: {len(remaining_text)} 字符")
+            logger.info(f"剩余文本开头: {remaining_text[:100]}..." if len(remaining_text) > 100 else f"剩余文本: {remaining_text}")
             
             # 在最大长度范围内寻找最佳分割点
             search_end = max_length
             best_split_pos = None
+            split_method = "未知"
             
             # 优先级1: 段落边界（双换行符）
             double_newline_pos = remaining_text.rfind('\n\n', 0, search_end)
             if double_newline_pos > max_length // 3:  # 确保分割点不会太靠前
                 best_split_pos = double_newline_pos + 2
-                logger.debug(f"使用双换行符分割，位置: {double_newline_pos}")
+                split_method = f"双换行符分割(位置:{double_newline_pos})"
             
             # 优先级2: 单换行符
             if best_split_pos is None:
                 single_newline_pos = remaining_text.rfind('\n', max_length // 2, search_end)
                 if single_newline_pos > 0:
                     best_split_pos = single_newline_pos + 1
-                    logger.debug(f"使用单换行符分割，位置: {single_newline_pos}")
+                    split_method = f"单换行符分割(位置:{single_newline_pos})"
             
             # 优先级3: 句号等句子结束符
             if best_split_pos is None:
@@ -476,7 +487,7 @@ class Main(Star):
                     delimiter_pos = remaining_text.rfind(delimiter, max_length // 2, search_end)
                     if delimiter_pos > 0:
                         best_split_pos = delimiter_pos + 1
-                        logger.debug(f"使用句号分割 '{delimiter}'，位置: {delimiter_pos}")
+                        split_method = f"句号分割('{delimiter}',位置:{delimiter_pos})"
                         break
             
             # 优先级4: 逗号等标点符号
@@ -485,7 +496,7 @@ class Main(Star):
                     delimiter_pos = remaining_text.rfind(delimiter, max_length // 2, search_end)
                     if delimiter_pos > 0:
                         best_split_pos = delimiter_pos + 1
-                        logger.debug(f"使用逗号分割 '{delimiter}'，位置: {delimiter_pos}")
+                        split_method = f"逗号分割('{delimiter}',位置:{delimiter_pos})"
                         break
             
             # 优先级5: 空格
@@ -493,12 +504,14 @@ class Main(Star):
                 space_pos = remaining_text.rfind(' ', max_length // 2, search_end)
                 if space_pos > 0:
                     best_split_pos = space_pos + 1
-                    logger.debug(f"使用空格分割，位置: {space_pos}")
+                    split_method = f"空格分割(位置:{space_pos})"
             
             # 如果找不到合适的分割点，就在最大长度处强制分割
             if best_split_pos is None:
                 best_split_pos = max_length
-                logger.debug(f"强制分割，位置: {best_split_pos}")
+                split_method = f"强制分割(位置:{best_split_pos})"
+            
+            logger.info(f"选择分割方法: {split_method}")
             
             # 提取当前部分 - 不使用strip()来避免丢失重要空白字符
             current_part = remaining_text[:best_split_pos]
@@ -507,14 +520,15 @@ class Main(Star):
             
             if current_part:  # 只添加非空内容
                 parts.append(current_part)
-                logger.debug(f"添加第{len(parts)}段: 长度={len(current_part)}")
+                logger.info(f"提取第{len(parts)}段成功: 长度={len(current_part)} 字符")
+                logger.info(f"第{len(parts)}段结尾: ...{current_part[-100:]}" if len(current_part) > 100 else f"第{len(parts)}段内容: {current_part}")
             
             # 更新剩余文本 - 不使用strip()来避免丢失重要空白字符
             remaining_text = remaining_text[best_split_pos:]
             # 只去除开头的空白，保留内容格式
             remaining_text = remaining_text.lstrip()
             
-            logger.debug(f"更新后剩余长度: {len(remaining_text)}")
+            logger.info(f"更新后剩余长度: {len(remaining_text)} 字符")
             
             # 防止无限循环
             if len(remaining_text) >= len(message):
@@ -527,25 +541,42 @@ class Main(Star):
             remaining_text = remaining_text.strip()
             if remaining_text:
                 parts.append(remaining_text)
-                logger.debug(f"添加最后段: 长度={len(remaining_text)}")
+                logger.info(f"添加最后段: 长度={len(remaining_text)} 字符")
+                logger.info(f"最后段内容预览: {remaining_text[:100]}..." if len(remaining_text) > 100 else f"最后段内容: {remaining_text}")
         
-        logger.info(f"分割完成: 共{len(parts)}段")
+        logger.info(f"=== 分割算法完成 ===")
+        logger.info(f"总分段数: {len(parts)} 段")
+        
+        # 详细记录每段的信息
+        for i, part in enumerate(parts, 1):
+            logger.info(f"第{i}段信息: 长度={len(part)} 字符, 开头='{part[:50]}...'" if len(part) > 50 else f"第{i}段信息: 长度={len(part)} 字符, 内容='{part}'")
         
         # 验证内容完整性
         reconstructed_full = ''.join(parts)
         original_full = message.strip()
         
+        logger.info(f"=== 完整性验证 ===")
+        logger.info(f"原始消息长度: {len(original_full)} 字符")
+        logger.info(f"重构消息长度: {len(reconstructed_full)} 字符")
+        
         if len(original_full) != len(reconstructed_full):
-            logger.warning(f"分段后长度不匹配: 原始={len(original_full)}, 重构={len(reconstructed_full)}")
-            logger.warning(f"差异: {len(original_full) - len(reconstructed_full)} 字符")
+            logger.warning(f"分段后长度不匹配: 差异={len(original_full) - len(reconstructed_full)} 字符")
             
             # 更详细的调试信息
             original_clean = original_full.replace(' ', '').replace('\n', '').replace('\t', '')
             reconstructed_clean = reconstructed_full.replace(' ', '').replace('\n', '').replace('\t', '')
+            logger.info(f"净内容原始长度: {len(original_clean)} 字符")
+            logger.info(f"净内容重构长度: {len(reconstructed_clean)} 字符")
+            
             if len(original_clean) != len(reconstructed_clean):
-                logger.error(f"内容实质性丢失: 原始净长度={len(original_clean)}, 重构净长度={len(reconstructed_clean)}")
+                logger.error(f"❌ 内容实质性丢失: 差异={len(original_clean) - len(reconstructed_clean)} 字符")
+            else:
+                logger.info(f"✅ 仅空白字符差异，核心内容完整")
+        else:
+            logger.info(f"✅ 长度完全匹配，无任何丢失")
         
         # 发送所有部分
+        logger.info(f"=== 开始发送消息 ===")
         for i, part in enumerate(parts):
             if len(parts) > 1:
                 # 添加分页标记
@@ -554,12 +585,19 @@ class Main(Star):
             else:
                 final_part = part
             
-            logger.debug(f"发送第{i+1}段: 长度={len(final_part)}")
+            logger.info(f"准备发送第{i+1}段: 原始长度={len(part)}, 加标记后长度={len(final_part)}")
+            logger.info(f"第{i+1}段发送内容预览: {final_part[:150]}..." if len(final_part) > 150 else f"第{i+1}段发送内容: {final_part}")
+            
             await event.send(event.plain_result(final_part))
+            logger.info(f"✅ 第{i+1}段发送成功")
             
             # 在多段消息之间稍作延迟，避免消息顺序混乱
             if i < len(parts) - 1:
+                logger.info(f"延迟0.3秒后继续发送下一段...")
                 await asyncio.sleep(0.3)
+        
+        logger.info(f"=== 所有消息发送完成 ===")
+        logger.info(f"总计发送 {len(parts)} 段消息，原始消息 {len(message)} 字符已完整传递")
     
     async def _generate_answer_from_context(self, context_list: list, question: str) -> str:
         """基于检索到的上下文生成答案"""
