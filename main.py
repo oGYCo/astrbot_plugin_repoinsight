@@ -436,7 +436,7 @@ class Main(Star):
             logger.error(f"轮询查询结果失败: {e}")
             return None
     
-    async def _send_long_message(self, event: AstrMessageEvent, message: str, max_length: int = 1800):
+    async def _send_long_message(self, event: AstrMessageEvent, message: str, max_length: int = 1200):
         """智能分段发送长消息，确保完整性和内容不丢失"""
         if len(message) <= max_length:
             await event.send(event.plain_result(message))
